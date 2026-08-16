@@ -56,7 +56,7 @@ Usage
 Outputs
 -------
     data/raw/reference/<source>_sp500_components.csv   cached raw download
-    data/processed/sp500_membership.csv                tidy (date, ticker)
+    data/processed/sp500_membership.csv                (date, ticker, ticker_asof)
     config/training_universe.py                        regenerated union
 """
 
@@ -74,6 +74,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from config.ticker_renames import resolve_ticker  # noqa: E402
 from src.data_pipeline.tickers import normalize_tickers  # noqa: E402
 
 REFERENCE_DIR = REPO_ROOT / "data" / "raw" / "reference"
@@ -155,15 +156,31 @@ def select_window(df: pd.DataFrame, start: dt.date, end: dt.date) -> pd.DataFram
 
 
 def to_long(df: pd.DataFrame) -> pd.DataFrame:
-    """Explode each roster row into one row per (date, ticker)."""
-    records: list[tuple[pd.Timestamp, str]] = []
-    for date, roster in zip(df["date"], df["tickers"]):
-        for ticker in normalize_tickers(str(roster).split(",")):
-            records.append((date, ticker))
+    """Explode each roster row into one row per (date, ticker).
 
-    long = pd.DataFrame.from_records(records, columns=["date", "ticker"])
-    long = long.drop_duplicates().sort_values(["date", "ticker"]).reset_index(drop=True)
-    return long
+    Emits two symbol columns, because they answer different questions:
+
+        ticker       current symbol, after following any rename chain. This is
+                     the JOIN KEY -- it matches the price files on disk, which
+                     Yahoo names by current symbol.
+        ticker_asof  the symbol actually in use on that date, preserved as the
+                     historical record.
+
+    So Anthem's 2018 rows read ticker=ELV, ticker_asof=ANTM. Without the
+    resolved column, one continuous company splits into two fragments: ANTM
+    with no price file at all, and ELV that looks like it appeared in 2022.
+    Joining on `ticker` keeps it whole; `ticker_asof` keeps it honest.
+    """
+    records: list[tuple[pd.Timestamp, str, str]] = []
+    for date, roster in zip(df["date"], df["tickers"]):
+        for asof in normalize_tickers(str(roster).split(",")):
+            records.append((date, resolve_ticker(asof), asof))
+
+    long = pd.DataFrame.from_records(records, columns=["date", "ticker", "ticker_asof"])
+    # A rename chain can map two historical symbols onto one current symbol;
+    # collapse those so a date never lists the same company twice.
+    long = long.drop_duplicates(subset=["date", "ticker"])
+    return long.sort_values(["date", "ticker"]).reset_index(drop=True)
 
 
 def write_universe(tickers: list[str], source: str, long: pd.DataFrame) -> None:
