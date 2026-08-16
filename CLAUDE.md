@@ -13,14 +13,16 @@ Generates trading signals for a small set of approved stocks/ETFs, then hands fl
 - Only stocks/ETFs on Wharton's approved list are tradeable live (`config/stock_list.py`)
 - No day trading — never suggest buying and selling the same symbol same-day
 - No short selling, no margin
-- Position limit: a cap on % of portfolio in any single stock (value set by the competition — confirm in WInS Portfolio Summary → Rules once available, then hardcode in `config/`)
-- Fixed cap on total number of trades for the season — treat trades as a scarce resource, not something to spend casually
+- Position limit: a cap on % of portfolio in any single stock (value set by the competition — confirm in WInS Portfolio Summary → Rules once available, then hardcode in `config/cost_model.py`)
+- Fixed cap on total number of trades for the season — 200 trades over 10 weeks — treat trades as a scarce resource, not something to spend casually
 - All execution is manual. The system's only output is a recommendation; a team member places every order in WInS by hand.
 
 ## Architecture
 
+**Bar frequency: daily, not hourly** (decided 2026-08-16). `yfinance` only serves ~730 days of hourly bars measured from today, so hourly back to 2018 isn't obtainable without a paid vendor — and it wouldn't matter if it were, since "no day trading" means a signal can't be acted on and exited same-session anyway. Daily bars over the full ~8yr history is both what's actually fetchable and what the rules make usable. Full reasoning: `baseline_system_architecture.md` §1, Layer 1.
+
 **Two data universes, one shared feature pipeline:**
-- `config/training_universe.py` — broad universe, ~10yr history, used only for training
+- `config/training_universe.py` — broad universe, ~8yr history (2018–2026), survivorship-bias-free via point-in-time S&P 500 membership, used only for training
 - `config/stock_list.py` — Wharton's approved list, recent/live data, used only for scoring
 - `src/features/build_features.py` is the ONE function both training and live scoring call. Never write a second, separate feature computation path — that's how train/live drift happens.
 
@@ -43,35 +45,51 @@ Generates trading signals for a small set of approved stocks/ETFs, then hands fl
 
 ## Repo structure
 
+This file originated in the standalone `wharton-InC` data-pipeline repo and was
+merged into the `gen alg + XGB` project, which already had a working
+GA/XGBoost training system under different module names. The table maps the
+concepts above onto where they actually live now; `[ ]` = not built yet.
+
+| Concept above | Lives at |
+|---|---|
+| Data fetch (`fetch_training.py`) | `src/data_pipeline/fetch_training.py` ✅ |
+| Point-in-time universe builder | `src/data_pipeline/fetch_point_in_time_universe.py` ✅ |
+| Live-data puller (`fetch_live.py`) | `[ ]` not built — only the training puller exists so far |
+| `build_features.py` | `[ ]` not built — `src/data_layer/interface.py` defines the `DataProvider`/`FeatureTable` contract this should implement; only a synthetic `MockDataProvider` exists today |
+| Per-sector model training (`models/train.py`) | `src/experts/base.py` (`ExpertModel`) + `src/ga/search.py` (`GeneticSearch`, walk-forward CV) ✅ |
+| `score_live.py` | `[ ]` not built |
+| Allocation & filter layer | `src/selection/trade_selector.py` (`TradeSelector`) ✅ |
+| `sector_map.py` | `[ ]` not built — sector membership is currently a field on the feature table, not a standalone config module |
+| `cost_model.py` | `config/cost_model.py` ✅ |
+| `portfolio_state.json` | `data/processed/portfolio_state.json` ✅ (now also carries `entry_date`/`scheduled_exit_date` per position, per `exit_rule_spec.md`) |
+
+Not in the original `wharton-InC` plan, added since: `config/hold_period.py` (`hold_days` N + the competition window length — single source of truth for the fixed-holding-period exit rule, `exit_rule_spec.md`) and `src/pipeline/sweep.py` (the `hold_days` outer-loop sweep — N defines the training label, so each value swept is a full retrain, not a GA gene).
+
+Actual current layout:
+
 ```
-wharton-InC/
-├── data/
-│   ├── raw/
-│   │   ├── training/          # broad universe, 10yr historical
-│   │   └── live/               # approved list only, recent/live
-│   └── processed/
-│       └── portfolio_state.json
-├── src/
-│   ├── data_pipeline/
-│   │   ├── fetch_training.py   # broad universe puller
-│   │   └── fetch_live.py       # approved-list-only puller
-│   ├── features/
-│   │   └── build_features.py   # shared by train + live, no exceptions
-│   ├── models/
-│   │   ├── train.py            # walk-forward CV, saves one model per sector
-│   │   └── saved/               # gitignored model artifacts
-│   ├── signals/
-│   │   └── score_live.py        # loads saved models, scores approved list
-│   ├── allocation/
-│   │   └── filter_and_size.py   # trade/no-trade + position sizing rule
-│   ├── backtest/
-│   └── reporting/
+gen alg + XGB/
+├── baseline_system_architecture.md   # design doc — read this alongside this file
+├── exit_rule_spec.md                 # fixed-holding-period exit rule spec
 ├── config/
-│   ├── stock_list.py            # approved (tradeable) tickers
-│   ├── training_universe.py     # broader training universe
-│   ├── sector_map.py            # ticker -> sector, single source of truth
-│   └── cost_model.py            # commission rate, assumed spread
-├── venv/                         # gitignored
+│   ├── stock_list.py            # approved (tradeable) tickers — currently empty, TBD
+│   ├── training_universe.py     # broader training universe (generated)
+│   ├── cost_model.py            # commission rate, assumed spread — placeholder values
+│   └── hold_period.py           # hold_days (N), competition window length
+├── data/
+│   ├── raw/training/            # broad universe, ~8yr daily bars
+│   ├── raw/reference/           # point-in-time S&P 500 membership source
+│   └── processed/               # sp500_membership.csv, portfolio_state.json
+├── src/
+│   ├── data_pipeline/            # fetch_training.py, fetch_point_in_time_universe.py, tickers.py
+│   ├── data_layer/               # DataProvider interface (§1) — MockDataProvider only so far
+│   ├── experts/                  # ExpertModel — XGBoost + confidence (§2)
+│   ├── ga/                       # genetic hyperparameter search (§3)
+│   ├── combiner/                 # OverallModel — blend + rank (§4)
+│   ├── selection/                # TradeSelector — fixed-hold exit rule, cost filter, sizing, budget (§5)
+│   └── pipeline/                 # train_baseline.py wires all of the above; sweep.py sweeps hold_days
+├── tests/
+├── scripts/run_baseline_demo.py
 ├── .env.example
 ├── .gitignore
 ├── requirements.txt

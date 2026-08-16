@@ -1,4 +1,9 @@
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+scikit-learn>=1.3
+xgboost>=2.0
+
+# data pipeline (merged from wharton-InC, src/data_pipeline/)
 yfinance
-pandas
-numpy
 python-dotenv

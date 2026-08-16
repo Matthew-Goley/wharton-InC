@@ -1,0 +1,129 @@
+# wharton-InC
+
+## Repo Architecture
+config/
+├── stock_list.py         # approved (tradeable) tickers
+├── training_universe.py  # broader universe used for training
+└── sector_map.py         # ticker -> sector, single source of truth
+wharton-InC/
+├── data/                  # raw + processed data
+│   ├── raw/
+│   └── processed/
+src/
+├── features/
+│   └── build_features.py # the ONE function both train and live call
+├── models/
+│   ├── train.py           # walk-forward CV, saves one model per sector
+│   └── saved/              # gitignored model artifacts
+├── signals/
+│   └── score_live.py      # loads saved models, scores approved list, writes flags
+├── .env.example
+├── .gitignore
+├── requirements.txt       # pip install -r requirements.txt
+└── README.md
+
+## How To Get Raw Ticker Data:
+
+Two steps. Step 1 decides *which* companies to pull, Step 2 pulls their prices.
+Run both from the repo root with the venv active.
+
+### Step 1 — build the point-in-time universe
+
+```bash
+python src/data_pipeline/fetch_point_in_time_universe.py
+```
+
+Downloads the historical S&P 500 membership list, works out who was actually in
+the index on each past date, and regenerates the training universe.
+
+Writes:
+
+| File | What it is |
+|---|---|
+| `data/raw/reference/fja_sp500_components.csv` | cached raw download |
+| `data/processed/sp500_membership.csv` | tidy `(date, ticker, ticker_asof)` |
+| `config/training_universe.py` | **generated** — do not hand-edit |
+
+Flags: `--force` (ignore cache), `--no-write-config` (build the table without
+touching the universe file), `--source hanshof` (alternate source — worse
+coverage and dirtier symbols, see the script docstring).
+
+### Step 2 — fetch daily price data
+
+```bash
+python src/data_pipeline/fetch_training.py --interval 1d --start 2018-01-01 --end 2026-01-01 --chunk-days 3650
+```
+
+Roughly 25 minutes for the full universe. Writes one CSV per company to
+`data/raw/training/<TICKER>_1d.csv` with columns
+`timestamp, Open, High, Low, Close, Adj Close, Volume`.
+
+On Windows, to see progress live and keep a log (`-u` disables Python's output
+buffering, or you get nothing for minutes at a time):
+
+```powershell
+python -u src\data_pipeline\fetch_training.py --interval 1d --start 2018-01-01 --end 2026-01-01 --chunk-days 3650 | Tee-Object -FilePath fetch_1d.log
+```
+
+### Refetching only some tickers
+
+Use this whenever you need a handful of names rather than the whole universe:
+
+```bash
+python src/data_pipeline/fetch_training.py --interval 1d --start 2018-01-01 --end 2026-01-01 --chunk-days 3650 --tickers BFH BNY DINO
+```
+
+> **Without `--tickers` the command re-downloads all ~653 companies.** The
+> downloader caches partial work in `data/raw/training/chunks/`, but that folder
+> is currently empty, so there is no resume shortcut to fall back on.
+
+### Verifying the ticker rename map
+
+```bash
+python config/ticker_renames.py
+```
+
+Companies change their ticker symbol (Anthem → Elevance, `ANTM` → `ELV`), and
+Yahoo moves the whole price history to the new symbol. `config/ticker_renames.py`
+maps old symbols to current ones so one company doesn't look like two. This
+command re-checks every mapping against Yahoo and reports any that broke.
+
+## Gotchas
+
+- **Daily data only.** Yahoo serves at most 730 days of hourly data, counted
+  back from today — so multi-year hourly history is not obtainable for free, and
+  no amount of chunking gets around it. `--interval 1h` still works for the
+  recent two-year window, but training does not use it.
+
+- **Some tickers fail, and that is expected.** ~67 companies in the universe were
+  acquired, taken private, or failed, and Yahoo has deleted their history
+  (Monsanto, Celgene, Twitter, Raytheon, SVB…). They are listed in
+  `config/ticker_renames.py` under `DELISTED_NO_SUCCESSOR`. Roughly 92% of all
+  (date, company) index memberships have price data; the missing 8% is a known
+  limitation of free data and should be mentioned in the competition report.
+
+- **Join on `ticker`, not `ticker_asof`.** In `sp500_membership.csv`, `ticker` is
+  the current symbol and matches the price filenames. `ticker_asof` is the symbol
+  that was in use on that date, kept as the historical record.
+
+- **Membership is not one row per day.** The source only records a row when index
+  membership *changes*, so a row means "this was the roster as of this date, and
+  stayed that way until the next row." Resolving a date needs a backward as-of
+  join, not an exact-date match:
+
+  ```python
+  pd.merge_asof(features.sort_values("date"),
+                membership.sort_values("date"),
+                on="date", by="ticker", direction="backward")
+  ```
+
+  An exact-date equality join will silently match almost nothing.
+
+- **`Adj Close` is rewritten history.** It is recalculated every time a dividend
+  is paid, so the value stored against a 2018 row is not a number that existed in
+  2018. Training on it leaks future information. `Open/High/Low/Close` are what
+  actually printed that day — prefer those unless you have a specific reason.
+
+- **`SPY_1d.csv` is not part of the universe.** SPY is an index fund, not an S&P
+  500 member, so it is absent from `training_universe.py`. It is kept as the
+  benchmark to measure the strategy against.

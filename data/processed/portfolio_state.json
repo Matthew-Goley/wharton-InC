@@ -1,0 +1,6 @@
+{
+  "_readme": "Hand-maintained (WInS has no API). Update after every real trade: ticker, shares, avg_price, entry_date, scheduled_exit_date (= entry_date + hold_days trading days, per exit_rule_spec.md). cash is a placeholder until the real WInS starting balance is set.",
+  "as_of": "",
+  "cash": 0.0,
+  "positions": {}
+}

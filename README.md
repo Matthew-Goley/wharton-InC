@@ -1,129 +1,160 @@
-# wharton-InC
+# Baseline Training System
 
-## Repo Architecture
+Implementation of [`baseline_system_architecture.md`](baseline_system_architecture.md)
+§§2–5 (Sector/Broad Experts, Genetic Algorithm, Combination Layer, Trade
+Selection). §1 (Data Layer) has a real fetch pipeline (merged in from
+`wharton-InC`, see below) but no `DataProvider` wired up to it yet — see
+"Wiring in the real Data Layer".
+
+**Bar frequency is daily, not hourly** — decided 2026-08-16 after finding
+`yfinance` can't serve hourly bars back to 2018, and that intraday
+resolution isn't usable anyway given the competition's no-day-trading rule.
+Full reasoning in the architecture doc §1 and `CLAUDE.md`.
+
+## Layout
+
+```
 config/
-├── stock_list.py         # approved (tradeable) tickers
-├── training_universe.py  # broader universe used for training
-└── sector_map.py         # ticker -> sector, single source of truth
-wharton-InC/
-├── data/                  # raw + processed data
-│   ├── raw/
-│   └── processed/
+  stock_list.py       Wharton's approved (tradeable) tickers — empty, TBD.
+  training_universe.py Broad training universe (generated, 685 tickers).
+  cost_model.py         Commission/spread/position-cap assumptions used by
+                        the selection layer's cost-clearing filter — all
+                        placeholder values pending confirmed competition rules.
+  hold_period.py         hold_days (N) and the competition window length —
+                        single source of truth for the fixed-hold exit rule
+                        (exit_rule_spec.md), read by both the label horizon
+                        and the selector.
+
+data/
+  raw/training/         ~685 tickers, daily OHLCV, 2018-2026 (from wharton-InC).
+  raw/reference/         Point-in-time S&P 500 membership source.
+  processed/             sp500_membership.csv, portfolio_state.json
+                        (hand-maintained — WInS has no API).
+
 src/
-├── features/
-│   └── build_features.py # the ONE function both train and live call
-├── models/
-│   ├── train.py           # walk-forward CV, saves one model per sector
-│   └── saved/              # gitignored model artifacts
-├── signals/
-│   └── score_live.py      # loads saved models, scores approved list, writes flags
-├── .env.example
-├── .gitignore
-├── requirements.txt       # pip install -r requirements.txt
-└── README.md
+  data_pipeline/       Fetch scripts (yfinance pull, point-in-time universe
+                      builder), merged in from wharton-InC. Not yet wired
+                      into a DataProvider — see below.
+  config.py          Central config: expert roster, GA settings, hyperparameter
+                      search space, walk-forward settings, trading rules
+                      (budget, long-only, cost margin, position cap).
+  data_layer/         §1 contract. interface.py defines DataProvider/
+                      FeatureTable; mock_provider.py is a synthetic stand-in
+                      so everything below is runnable without real data wired up.
+  experts/            §2. ExpertModel wraps three XGBoost models (mean-return
+                      regressor + two quantile regressors) into a single
+                      predict_return + confidence output. registry.py slices
+                      the shared feature table per expert (broad vs. sector).
+  ga/                 §3. genome.py: genome = XGBConfig, plus sample/mutate/
+                      crossover operators. population.py: selection + elitism.
+                      search.py: the generational loop, fitness = mean
+                      walk-forward Information Coefficient.
+  evaluation/          Walk-forward (train-on-past/test-on-future) splitting,
+                      plus the IC / RMSE scoring functions used as fitness.
+  combiner/            §4. OverallModel: confidence-weighted combination of
+                      broad + sector expert predictions, with a *signed*
+                      agreement bonus (reinforces whichever direction both
+                      experts share, bullish or bearish), then per-period ranking.
+  selection/           §5. TradeSelector implements the fixed-holding-period
+                      exit rule (exit_rule_spec.md): a position entered on
+                      period d closes on d + hold_days, unconditionally.
+                      Enforces long-only, cost-clearing (round-trip, charged
+                      once at entry), equal-weight sizing capped at
+                      position_cap_pct, an entry cutoff so nothing is
+                      entered too late to exit inside the window, and a
+                      logged force-close safety net. Budget accounting
+                      treats every entry as obligating a future exit (200
+                      trades = ~100 round trips), and the concurrent-
+                      position ceiling (1/position_cap_pct) throttles
+                      entries alongside the budget. No timing/trigger logic
+                      beyond that, by design — see the doc's Ablation Plan.
+                      portfolio_state.py: reads/writes the hand-maintained
+                      data/processed/portfolio_state.json, including each
+                      position's entry_date/scheduled_exit_date.
+  pipeline/            train_baseline.py orchestrates: DataProvider (asserts
+                      its label horizon matches hold_days) -> per-expert GA
+                      search -> train experts -> combine -> rank -> select
+                      trades (portfolio-aware, restrictable to a live
+                      trading window via trading_window_periods).
+                      sweep.py: the hold_days outer loop (spec §2) — N
+                      defines the training label, so each value swept is a
+                      full retrain, not a GA gene.
 
-## How To Get Raw Ticker Data:
-
-Two steps. Step 1 decides *which* companies to pull, Step 2 pulls their prices.
-Run both from the repo root with the venv active.
-
-### Step 1 — build the point-in-time universe
-
-```bash
-python src/data_pipeline/fetch_point_in_time_universe.py
+scripts/run_baseline_demo.py   Runs the full pipeline against
+                                MockDataProvider with small/fast GA settings,
+                                to prove the wiring works end to end.
+tests/                          Unit tests for walk-forward splitting, GA
+                                operators/selection, the combiner's scoring
+                                math, the trade selector's rule enforcement,
+                                and ExpertModel's fit/predict contract.
 ```
 
-Downloads the historical S&P 500 membership list, works out who was actually in
-the index on each past date, and regenerates the training universe.
+## Running
 
-Writes:
-
-| File | What it is |
-|---|---|
-| `data/raw/reference/fja_sp500_components.csv` | cached raw download |
-| `data/processed/sp500_membership.csv` | tidy `(date, ticker, ticker_asof)` |
-| `config/training_universe.py` | **generated** — do not hand-edit |
-
-Flags: `--force` (ignore cache), `--no-write-config` (build the table without
-touching the universe file), `--source hanshof` (alternate source — worse
-coverage and dirtier symbols, see the script docstring).
-
-### Step 2 — fetch daily price data
-
-```bash
-python src/data_pipeline/fetch_training.py --interval 1d --start 2018-01-01 --end 2026-01-01 --chunk-days 3650
+```
+pip install -r requirements.txt
+python -m pytest                    # unit tests (~2s)
+python -m scripts.run_baseline_demo # full pipeline on synthetic data (~30-60s)
 ```
 
-Roughly 25 minutes for the full universe. Writes one CSV per company to
-`data/raw/training/<TICKER>_1d.csv` with columns
-`timestamp, Open, High, Low, Close, Adj Close, Volume`.
+## Wiring in the real Data Layer
 
-On Windows, to see progress live and keep a log (`-u` disables Python's output
-buffering, or you get nothing for minutes at a time):
+Everything downstream depends only on `src.data_layer.DataProvider`:
 
-```powershell
-python -u src\data_pipeline\fetch_training.py --interval 1d --start 2018-01-01 --end 2026-01-01 --chunk-days 3650 | Tee-Object -FilePath fetch_1d.log
+```python
+class DataProvider(ABC):
+    def get_feature_table(self, start: str, end: str, hold_days: int) -> FeatureTable: ...
 ```
 
-### Refetching only some tickers
+`FeatureTable` is a `(ticker, timestamp)`-indexed frame with named feature
+columns, a target column (an N-day forward return, N = `hold_days`,
+recorded on `target_horizon_days` so `train_baseline` can assert the label
+actually matches the selector's exit timing), and a sector column. The raw
+data and fetch
+scripts already exist (`data/raw/training/*.csv`, `src/data_pipeline/`) —
+what's missing is the feature-engineering step (`build_features.py` in
+CLAUDE.md's plan: moving averages, volatility, momentum, sector tags,
+computed once from the raw CSVs) and a `DataProvider` that reads it into a
+`FeatureTable`. Once that exists, pass an instance of it to `train_baseline()`
+instead of `MockDataProvider`. Nothing in `experts/`, `ga/`, `combiner/`, or
+`selection/` needs to change.
 
-Use this whenever you need a handful of names rather than the whole universe:
+## Exit rule: fixed holding period
 
-```bash
-python src/data_pipeline/fetch_training.py --interval 1d --start 2018-01-01 --end 2026-01-01 --chunk-days 3650 --tickers BFH BNY DINO
-```
+Resolved per [`exit_rule_spec.md`](exit_rule_spec.md) (was previously an
+open gap — `TradeSelector` only proposed entries, never exits). A position
+entered on period `d` closes on `d + hold_days`, unconditionally — no
+stop-loss, no signal-reversal, no early close. That means:
 
-> **Without `--tickers` the command re-downloads all ~653 companies.** The
-> downloader caches partial work in `data/raw/training/chunks/`, but that folder
-> is currently empty, so there is no resume shortcut to fall back on.
+- `hold_days` isn't a GA gene — it defines the training label (N-day
+  forward return), so sweeping it (`src.pipeline.sweep.sweep_hold_days`)
+  means a full retrain per value, not a population member.
+- The 200-trade budget is really ~100 round trips: every entry reserves a
+  budget unit for its own future exit.
+- Demo output: 200/200 budget spent as 100 entries + 100 exits, 0 positions
+  left open, 0 force-closes needed (`python -m scripts.run_baseline_demo`).
 
-### Verifying the ticker rename map
+Stop-loss/take-profit, signal-reversal exits, ranked replacement, and
+confidence-scaled holding periods are deferred to the ablation table (spec
+§7) — each makes holding period variable, which reintroduces the mismatch
+between what the experts were trained to predict and what gets backtested,
+so fixed-hold is the control.
 
-```bash
-python config/ticker_renames.py
-```
+## A calibration note worth keeping in mind
 
-Companies change their ticker symbol (Anthem → Elevance, `ANTM` → `ELV`), and
-Yahoo moves the whole price history to the new symbol. `config/ticker_renames.py`
-maps old symbols to current ones so one company doesn't look like two. This
-command re-checks every mapping against Yahoo and reports any that broke.
+`ExpertModel` standardizes the target (zero mean, unit variance) before
+fitting and un-standardizes predictions afterward. Without this,
+`gamma`/`reg_alpha`/`reg_lambda` — which operate in the target's own units —
+silently prune every split on a small-magnitude return target (e.g. daily
+return std ~0.01–0.05), collapsing every expert to a constant predictor
+regardless of hyperparameters. Standardizing keeps the GA's search space
+meaningful no matter the return scale of a given sector or bar frequency.
+See `tests/test_expert_model.py::test_works_regardless_of_target_scale`.
 
-## Gotchas
+## Scale note
 
-- **Daily data only.** Yahoo serves at most 730 days of hourly data, counted
-  back from today — so multi-year hourly history is not obtainable for free, and
-  no amount of chunking gets around it. `--interval 1h` still works for the
-  recent two-year window, but training does not use it.
-
-- **Some tickers fail, and that is expected.** ~67 companies in the universe were
-  acquired, taken private, or failed, and Yahoo has deleted their history
-  (Monsanto, Celgene, Twitter, Raytheon, SVB…). They are listed in
-  `config/ticker_renames.py` under `DELISTED_NO_SUCCESSOR`. Roughly 92% of all
-  (date, company) index memberships have price data; the missing 8% is a known
-  limitation of free data and should be mentioned in the competition report.
-
-- **Join on `ticker`, not `ticker_asof`.** In `sp500_membership.csv`, `ticker` is
-  the current symbol and matches the price filenames. `ticker_asof` is the symbol
-  that was in use on that date, kept as the historical record.
-
-- **Membership is not one row per day.** The source only records a row when index
-  membership *changes*, so a row means "this was the roster as of this date, and
-  stayed that way until the next row." Resolving a date needs a backward as-of
-  join, not an exact-date match:
-
-  ```python
-  pd.merge_asof(features.sort_values("date"),
-                membership.sort_values("date"),
-                on="date", by="ticker", direction="backward")
-  ```
-
-  An exact-date equality join will silently match almost nothing.
-
-- **`Adj Close` is rewritten history.** It is recalculated every time a dividend
-  is paid, so the value stored against a 2018 row is not a number that existed in
-  2018. Training on it leaks future information. `Open/High/Low/Close` are what
-  actually printed that day — prefer those unless you have a specific reason.
-
-- **`SPY_1d.csv` is not part of the universe.** SPY is an index fund, not an S&P
-  500 member, so it is absent from `training_universe.py`. It is kept as the
-  benchmark to measure the strategy against.
+`src.config.BaselineConfig()` defaults (population 50, 20 generations) are
+sized for a real run, not for quick iteration — a single expert's search
+alone is O(1,000) XGBoost fits. `scripts/run_baseline_demo.py` overrides
+these to something fast; do the same for local iteration and dial back up
+for the real thing.
