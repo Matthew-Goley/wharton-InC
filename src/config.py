@@ -33,9 +33,18 @@ class ExpertSpec:
 
 #: The expert roster. Add a row here (and nowhere else) to add a new sector
 #: expert — the GA, registry, and combiner all derive from this list.
+#:
+#: Sector strings must match ``config.sector_map.SECTOR_MAP``'s GICS-
+#: normalized values exactly (a mismatch silently trains on zero rows rather
+#: than erroring, since ``ExpertData.slice_for`` is a plain filter). Only
+#: three of the map's eleven sectors are wired up here so far — the plan is
+#: to validate the training path end to end on one sector expert first
+#: (Information Technology, the largest at 90 tickers) before committing to
+#: the rest; see scripts/train_sector_expert_real.py. This default roster
+#: stays a placeholder until that validates.
 EXPERTS: tuple[ExpertSpec, ...] = (
     ExpertSpec(name=BROAD_EXPERT, sector=None),
-    ExpertSpec(name="tech", sector="Technology"),
+    ExpertSpec(name="tech", sector="Information Technology"),
     ExpertSpec(name="financials", sector="Financials"),
     ExpertSpec(name="real_estate", sector="Real Estate"),
 )

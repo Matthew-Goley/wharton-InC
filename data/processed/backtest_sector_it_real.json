@@ -1,0 +1,170 @@
+{
+  "checkpoint": "step2_single_sector_expert",
+  "sector_expert": {
+    "name": "tech",
+    "sector": "Information Technology",
+    "ga": {
+      "population_size": 12,
+      "n_generations": 6,
+      "elite_count": 2,
+      "tournament_size": 3
+    },
+    "best_genome": {
+      "max_depth": 9,
+      "learning_rate": 0.0438875542470237,
+      "n_estimators": 120,
+      "subsample": 0.7531649658103166,
+      "colsample_bytree": 0.848160187538868,
+      "min_child_weight": 6.794786080725981,
+      "reg_alpha": 4.020622630911314,
+      "reg_lambda": 4.489800568390578,
+      "gamma": 3.1514129655944423
+    },
+    "train_fitness": 0.015866480817809392
+  },
+  "train_window": [
+    "2018-01-01",
+    "2024-01-01"
+  ],
+  "test_window": [
+    "2024-01-01",
+    "2026-01-01"
+  ],
+  "test_trading_days": 497,
+  "out_of_sample_cross_sectional_ic_broad": 0.020900032858868312,
+  "out_of_sample_cross_sectional_ic_tech": 0.02395921183430432,
+  "rows_with_sector_expert": 38290,
+  "rows_total": 244371,
+  "budget": 1988,
+  "trades_executed": 1988,
+  "entries": 994,
+  "exits": 994,
+  "entries_with_sector_expert": 753,
+  "win_rate": 0.5362173038229376,
+  "mean_return_per_trade_raw": 0.002470145753826328,
+  "median_return_per_trade_raw": 0.003413444795053233,
+  "mean_excess_return_per_trade_vs_market": 0.0005363164693667759,
+  "return_by_rank_bucket": [
+    {
+      "rank_range": "(0, 1]",
+      "n": 24,
+      "mean_return": -0.006369621605607528,
+      "median_return": 0.00757863349280552,
+      "win_rate": 0.5416666666666666
+    },
+    {
+      "rank_range": "(1, 3]",
+      "n": 65,
+      "mean_return": 0.005859000067460387,
+      "median_return": 0.00246246006517703,
+      "win_rate": 0.5846153846153846
+    },
+    {
+      "rank_range": "(3, 5]",
+      "n": 90,
+      "mean_return": 0.0052876551746064366,
+      "median_return": 0.00674598483180644,
+      "win_rate": 0.6
+    },
+    {
+      "rank_range": "(5, 10]",
+      "n": 213,
+      "mean_return": 0.005854888013184703,
+      "median_return": 0.0029759733368288632,
+      "win_rate": 0.5211267605633803
+    },
+    {
+      "rank_range": "(10, 10000]",
+      "n": 602,
+      "mean_return": 0.0008378416626745935,
+      "median_return": 0.0030645528478608908,
+      "win_rate": 0.526578073089701
+    }
+  ],
+  "split_sample_validation": {
+    "by_year": {
+      "2024": [
+        {
+          "rank_range": "(0, 1]",
+          "n": 24,
+          "mean_return": -0.006369621605607528,
+          "median_return": 0.00757863349280552,
+          "win_rate": 0.5416666666666666
+        },
+        {
+          "rank_range": "(1, 3]",
+          "n": 65,
+          "mean_return": 0.005859000067460387,
+          "median_return": 0.00246246006517703,
+          "win_rate": 0.5846153846153846
+        },
+        {
+          "rank_range": "(3, 5]",
+          "n": 90,
+          "mean_return": 0.0052876551746064366,
+          "median_return": 0.00674598483180644,
+          "win_rate": 0.6
+        },
+        {
+          "rank_range": "(5, 10]",
+          "n": 213,
+          "mean_return": 0.005854888013184703,
+          "median_return": 0.0029759733368288632,
+          "win_rate": 0.5211267605633803
+        },
+        {
+          "rank_range": "(10, 10000]",
+          "n": 602,
+          "mean_return": 0.0008378416626745935,
+          "median_return": 0.0030645528478608908,
+          "win_rate": 0.526578073089701
+        }
+      ],
+      "2025": [
+        {
+          "rank_range": "(0, 1]",
+          "n": 0,
+          "mean_return": null,
+          "median_return": null,
+          "win_rate": null
+        },
+        {
+          "rank_range": "(1, 3]",
+          "n": 0,
+          "mean_return": null,
+          "median_return": null,
+          "win_rate": null
+        },
+        {
+          "rank_range": "(3, 5]",
+          "n": 0,
+          "mean_return": null,
+          "median_return": null,
+          "win_rate": null
+        },
+        {
+          "rank_range": "(5, 10]",
+          "n": 0,
+          "mean_return": null,
+          "median_return": null,
+          "win_rate": null
+        },
+        {
+          "rank_range": "(10, 10000]",
+          "n": 0,
+          "mean_return": null,
+          "median_return": null,
+          "win_rate": null
+        }
+      ]
+    },
+    "direction_consistent_across_years": {
+      "(0, 1]": true,
+      "(1, 3]": true,
+      "(3, 5]": true,
+      "(5, 10]": true,
+      "(10, 10000]": true
+    },
+    "embargoed_entries": 0
+  }
+}

@@ -42,12 +42,15 @@ Two correctness rules taken directly from the wharton-InC README's
   ``data/processed/sp500_membership.csv``), so training doesn't apply
   today's roster backward across history (survivorship bias).
 
-Sector split is NOT available yet — no sector classification data has been
-sourced (``config/sector_map.py`` doesn't exist, per CLAUDE.md's plan).
-Every row gets ``sector="Unknown"``, which means a sector expert
-(tech/financials/real_estate) would train on zero rows. Build a
-``BaselineConfig`` with ``experts=(ExpertSpec("broad", None),)`` when using
-this provider until sector data exists.
+Sector comes from ``config/sector_map.py`` (``SECTOR_MAP``, ticker -> GICS-
+normalized sector name, built by ``src.data_pipeline.fetch_sector_map`` from
+yfinance's ``.info['sector']``). Not point-in-time — a ticker's *current*
+sector is applied across its whole price history, the same simplification
+already made for the universe list itself. 70 of 653 universe tickers have
+no resolved sector (mostly delisted/acquired names with no live yfinance
+metadata) and fall back to ``UNKNOWN_SECTOR``, which never matches any
+sector expert's filter, so those rows are broad-only — the same behavior
+every ticker had before the map existed.
 """
 from __future__ import annotations
 
@@ -57,6 +60,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from config.sector_map import SECTOR_MAP
 from src.data_layer.interface import DataProvider, FeatureTable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -304,7 +308,7 @@ class RealDataProvider(DataProvider):
                 "ret_vol_corr_20": returns.rolling(20, min_periods=10).corr(volume.pct_change()),
                 "jump_ratio": jump_ratio(close),
                 TARGET_COLUMN: fwd_return,
-                "sector": UNKNOWN_SECTOR,
+                "sector": SECTOR_MAP.get(ticker, UNKNOWN_SECTOR),
             }
         )
         # A zero denominator anywhere above yields +/-inf, which XGBoost would
