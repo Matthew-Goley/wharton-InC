@@ -1,0 +1,32 @@
+{
+  "n_blocks_total": 100,
+  "common": {
+    "n": 331,
+    "mean_return": -0.0022679467210473055,
+    "median_return": 0.0021441440207152773,
+    "win_rate": 0.513595166163142
+  },
+  "only_a": {
+    "n": 663,
+    "mean_return": 0.004835618769185563,
+    "median_return": 0.004000161364724697,
+    "win_rate": 0.5475113122171946,
+    "distinct_blocks": 30,
+    "trades_per_active_block": 22.1
+  },
+  "only_b": {
+    "n": 663,
+    "mean_return": 0.007649974730794497,
+    "median_return": 0.005689268742322007,
+    "win_rate": 0.5565610859728507,
+    "distinct_blocks": 48,
+    "trades_per_active_block": 13.8125
+  },
+  "significance_only_a_vs_only_b": {
+    "mean_diff_b_minus_a": 0.002814355961608934,
+    "block_effective_se": 0.01501779739748331,
+    "block_effective_t": 0.1874013803169675
+  },
+  "label_a": "additive_bonus_buggy",
+  "label_b": "multiplicative_bonus_fixed"
+}
