@@ -9,14 +9,26 @@ volatility reading. Uses the existing `volatility_20` feature (already
 computed, already backward-looking, no new leakage surface) as the risk
 estimate: risk_adjusted = combined_score / volatility_20.
 
-Deliberately does NOT touch OverallModel/TradeSelector -- the selector
-already operates generically on whatever `rank` column a frame carries, so
-this builds an alternate ranked frame (same combined_score, for long-only
-and cost-clearing eligibility, which must stay in real return units; a
-*different* rank, derived from the risk-adjusted score) and runs it
-through the unmodified pipeline. If this resolves rank-1, it's the
-evidence to promote it into OverallModel as a real option; if not, no
-architecture change was wasted chasing it.
+Originally built as a standalone diagnostic that didn't touch OverallModel/
+TradeSelector at all, specifically so a null result wouldn't cost an
+architecture change. Result was real but partial (see below), which was
+enough to promote `ranking_score="vol_adjusted"` into OverallModel.rank()
+as a real, opt-in option -- this script now exercises that real API rather
+than a hand-rolled copy of it, as a regression check that the formalized
+version still reproduces the diagnostic's finding.
+
+RESULT: real, not a fix. Rank-1 (n=62->72, ticker diversity 14->35, PARA's
+share 60%->32%) improves from -4.11% to -2.81% mean, but decomposing the
+actual composition change (not just the naive dilution counterfactor) shows
+the 37 trades common to both rankings are literally unchanged at -4.27% --
+100% of the visible improvement comes from the 25 demoted trades (-3.88%
+avg) being replaced by 35 different ones (-1.28% avg), which is a real
+quality improvement in the swap but still firmly negative. Rank 1 stays the
+worst bucket in the risk-adjusted curve too. Residual is likely
+argmax/selection bias (the max of many noisy estimates is upward-biased by
+selection alone, independent of volatility) -- addressed by an uncertainty
+estimate, not a better vol estimate; see OverallModel.rank()'s docstring
+for the planned "uncertainty_adjusted" mode once sector experts exist.
 
 Usage:
     python -m scripts.vol_normalized_rank_check
@@ -102,25 +114,18 @@ def main() -> None:
     ranked_baseline = combiner.rank(combined)
     run_curve(ranked_baseline, test_data.frame, config, "BASELINE (rank by raw predicted return)")
 
-    # Risk-adjusted: rank by combined_score / volatility_20, but keep
-    # combined_score itself (real % units) for long-only + cost-clearing --
-    # those need to stay comparable to a fixed % cost threshold, a z-score
-    # isn't.
+    # Risk-adjusted, via OverallModel's own ranking_score option (formalized
+    # after this diagnostic confirmed the direction was real) -- combined_score
+    # itself stays untouched for long-only + cost-clearing, which need real %
+    # units, not a risk-adjusted ratio.
     # A handful of rows have no volatility_20 yet (a ticker's own history
     # starts inside the test window, so its 20d rolling window hasn't
     # filled) -- fill with a deliberately large value so those rows get
     # demoted rather than crash the rank on NaN, since "unknown risk" is
     # not "cheap risk."
     vol = test_data.frame["volatility_20"]
-    vol = vol.fillna(vol.max()).clip(lower=MIN_VOL)
-    risk_adjusted = combined["combined_score"] / vol
-    ranked_vol = combined.copy()
-    ranked_vol["risk_adjusted_score"] = risk_adjusted
-    ranked_vol["rank"] = (
-        ranked_vol.groupby(level="timestamp")["risk_adjusted_score"]
-        .rank(ascending=False, method="first")
-        .astype(int)
-    )
+    vol = vol.fillna(vol.max())
+    ranked_vol = combiner.rank(combined, ranking_score="vol_adjusted", risk=vol, risk_floor=MIN_VOL)
     run_curve(ranked_vol, test_data.frame, config, "RISK-ADJUSTED (rank by predicted_return / volatility_20)")
 
 

@@ -98,6 +98,43 @@ def test_rejects_missing_or_duplicate_broad_expert():
         OverallModel((TECH,))  # no broad expert at all
 
 
+def test_vol_adjusted_ranking_demotes_high_vol_large_prediction():
+    """A bigger raw prediction on a much more volatile name should be
+    demoted below a smaller prediction on a calmer one, once risk-adjusted
+    -- the whole point of the mode."""
+    model = OverallModel((BROAD,))
+    predictions = {"broad": _preds({("LOUD", T0): (0.10, 0.9), ("CALM", T0): (0.02, 0.9)})}
+    combined = model.combine(predictions)
+    risk = pd.Series({("LOUD", T0): 0.20, ("CALM", T0): 0.01})
+    risk.index.names = ["ticker", "timestamp"]
+
+    raw_ranked = model.rank(combined)
+    assert raw_ranked.loc[("LOUD", T0), "rank"] == 1  # bigger raw prediction wins by default
+
+    vol_ranked = model.rank(combined, ranking_score="vol_adjusted", risk=risk)
+    assert vol_ranked.loc[("CALM", T0), "rank"] == 1  # demoted once divided by its own volatility
+    assert vol_ranked.loc[("LOUD", T0), "ranking_score"] == pytest.approx(0.10 / 0.20)
+    assert vol_ranked.loc[("CALM", T0), "ranking_score"] == pytest.approx(0.02 / 0.01)
+    # combined_score is untouched -- TradeSelector's cost-clearing filter
+    # still sees real return units, not a risk-adjusted ratio.
+    assert vol_ranked.loc[("LOUD", T0), "combined_score"] == pytest.approx(0.10)
+    assert vol_ranked.loc[("CALM", T0), "combined_score"] == pytest.approx(0.02)
+
+
+def test_vol_adjusted_ranking_requires_risk():
+    model = OverallModel((BROAD,))
+    combined = model.combine({"broad": _preds({("AAA", T0): (0.05, 0.9)})})
+    with pytest.raises(ValueError, match="requires a `risk`"):
+        model.rank(combined, ranking_score="vol_adjusted")
+
+
+def test_unknown_ranking_score_rejected():
+    model = OverallModel((BROAD,))
+    combined = model.combine({"broad": _preds({("AAA", T0): (0.05, 0.9)})})
+    with pytest.raises(ValueError, match="unknown ranking_score"):
+        model.rank(combined, ranking_score="nonsense")
+
+
 def test_broad_only_with_zero_sector_experts_configured():
     """No sector experts in the roster at all (not just no data for one
     ticker) — the real-world case until sector data exists. Regression test:

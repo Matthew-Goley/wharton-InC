@@ -1,10 +1,16 @@
 """Combination layer (architecture §4): experts -> one ranked score per ticker."""
 from __future__ import annotations
 
+from typing import Literal, Optional
+
 import numpy as np
 import pandas as pd
 
 from src.config import BROAD_EXPERT, ExpertSpec
+
+#: Below this, a risk denominator is treated as unreliable-small rather than
+#: divided by, so a near-zero volatility reading can't produce a runaway score.
+_DEFAULT_RISK_FLOOR = 0.005
 
 _JOIN_COLUMNS = ["broad_return", "broad_confidence", "sector_return", "sector_confidence", "sector_expert"]
 
@@ -89,11 +95,59 @@ class OverallModel:
         return merged[_JOIN_COLUMNS + ["combined_score", "n_experts"]]
 
     @staticmethod
-    def rank(combined: pd.DataFrame) -> pd.DataFrame:
-        """Add a per-timestamp ``rank`` column (1 = best combined_score)."""
+    def rank(
+        combined: pd.DataFrame,
+        ranking_score: Literal["raw", "vol_adjusted"] = "raw",
+        risk: Optional[pd.Series] = None,
+        risk_floor: float = _DEFAULT_RISK_FLOOR,
+    ) -> pd.DataFrame:
+        """Add a per-timestamp ``rank`` column (1 = best score).
+
+        ``ranking_score`` selects what gets *sorted* — it never touches
+        ``combined_score`` itself, which stays in real return units for
+        ``TradeSelector``'s long-only check and cost-clearing filter (§5).
+        A risk-adjusted ratio isn't comparable to a fixed % cost threshold,
+        so ranking and eligibility deliberately read two different columns:
+
+        - ``"raw"`` (default): rank by ``combined_score`` directly.
+        - ``"vol_adjusted"``: rank by ``combined_score / risk``. Diagnosed
+          on the real backtest: taking the argmax of predicted return
+          across ~580 tickers a day disproportionately promotes whichever
+          name's raw prediction was largest *in magnitude* — which
+          correlates with recent realized volatility, not with prediction
+          reliability (measured: rank-1 picks averaged 4-5x the |predicted
+          return| of every other rank, concentrated in a handful of
+          high-volatility names). Dividing by recent volatility demotes a
+          big prediction that's just a big vol reading. Requires ``risk``
+          — a series shaped like the ``volatility_20`` feature, aligned to
+          the same (ticker, timestamp) index.
+
+        A third mode belongs in this same slot once it's buildable:
+        ranking by a lower-confidence-bound derived from broad/sector-
+        expert *disagreement* addresses a second, distinct effect that
+        vol-adjustment structurally can't reach — the argmax of many noisy
+        estimates is upward-biased by selection alone, even under
+        homoskedastic noise, independent of volatility. That needs a
+        second opinion to detect (ensemble disagreement as an uncertainty
+        estimate), which needs sector experts to exist. Not implemented;
+        tracked as an ablation row ("Selection score") in
+        baseline_system_architecture.md.
+        """
         out = combined.copy()
+        if ranking_score == "raw":
+            score = out["combined_score"]
+        elif ranking_score == "vol_adjusted":
+            if risk is None:
+                raise ValueError("ranking_score='vol_adjusted' requires a `risk` series (e.g. volatility_20)")
+            denom = risk.reindex(out.index)
+            denom = denom.fillna(denom.max()).clip(lower=risk_floor)
+            score = out["combined_score"] / denom
+        else:
+            raise ValueError(f"unknown ranking_score {ranking_score!r} (expected 'raw' or 'vol_adjusted')")
+
+        out["ranking_score"] = score
         out["rank"] = (
-            out.groupby(level="timestamp")["combined_score"]
+            out.groupby(level="timestamp")["ranking_score"]
             .rank(ascending=False, method="first")
             .astype(int)
         )
