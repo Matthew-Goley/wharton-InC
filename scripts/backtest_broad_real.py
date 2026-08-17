@@ -13,6 +13,17 @@ model's training and every prediction below are computed against genuinely
 held-out data it never saw in any form. A fully clean version would re-run
 the GA search restricted to the train window too; flagged, not done here.
 
+FINDING from the first real run (2024-01-01..2026-01-01 holdout): the model's
+ranking ability held up out of sample (cross-sectional IC +0.021, even better
+than the +0.014 it scored during training) -- but the selector's actual
+trades still lost money on average (-0.13%/trade). The gap is entirely
+rank-1: the single most-confident pick each day scored -4.1% mean / -3.1%
+median / 29% win rate, systematically bad, not a few outliers -- while ranks
+2-10 were all flat-to-positive (best: rank 3-5 at +0.86% mean, 53% win
+rate). The model's *ranking* is real; blindly taking its single most extreme
+prediction each day is not a good way to use it. See return_by_rank_bucket
+in the saved JSON before trusting any future run's headline numbers.
+
 Usage:
     python -m scripts.backtest_broad_real
 """
@@ -23,13 +34,23 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
+
 from src.combiner.overall_model import OverallModel
 from src.config import BROAD_EXPERT, BaselineConfig, ExpertSpec
 from src.data_layer import RealDataProvider
 from src.data_layer.real_provider import MARKET_TARGET_COLUMN, RAW_TARGET_COLUMN
+from src.evaluation.metrics import cross_sectional_ic
 from src.experts.base import ExpertModel, XGBConfig
 from src.experts.registry import build_expert_data
 from src.selection.trade_selector import TradeSelector
+
+#: Rank-1 (the model's single most confident pick each day) has measured
+#: systematically worse -- not just outlier-driven -- than ranks 2-10 on the
+#: 2024-2026 holdout: median -3.08% vs. flat-to-positive, win rate 29% vs.
+#: 50%+. Broken out explicitly rather than folded into one aggregate number,
+#: since that aggregate hid this entirely the first time.
+RANK_BUCKETS = [(0, 1), (1, 3), (3, 5), (5, 10), (10, 10_000)]
 
 TRAIN_START, TRAIN_END = "2018-01-01", "2024-01-01"
 TEST_START, TEST_END = "2024-01-01", "2026-01-01"
@@ -72,6 +93,19 @@ def main() -> None:
 
     print("\nPredicting on the held-out set, combining (pass-through, one expert), ranking...")
     preds = model.predict(test_data.X)
+
+    # Isolates model ranking quality from selection-pipeline behavior --
+    # measured against ALL test rows, before any eligibility/budget/holding
+    # constraints touch anything, so a bad backtest number can't be
+    # misdiagnosed as "the model doesn't generalize" when it's actually the
+    # selection logic (or vice versa).
+    oos_ic = cross_sectional_ic(
+        test_data.frame.index.get_level_values("timestamp").to_numpy(),
+        test_data.y.to_numpy(),
+        preds["predicted_return"].to_numpy(),
+    )
+    print(f"  out-of-sample cross-sectional IC (model ranking quality alone): {oos_ic:+.4f}")
+
     combiner = OverallModel((broad_spec,))
     ranked = combiner.rank(combiner.combine({BROAD_EXPERT: preds}))
 
@@ -101,10 +135,23 @@ def main() -> None:
     # whether ranking adds anything beyond the eligibility filter alone.
     all_eligible_raw = test_data.frame[RAW_TARGET_COLUMN]
 
+    rank_bucket_stats = []
+    for lo, hi in RANK_BUCKETS:
+        mask = (entries["rank"] > lo) & (entries["rank"] <= hi)
+        bucket_returns = entry_raw[mask.to_numpy()]
+        rank_bucket_stats.append({
+            "rank_range": f"({lo}, {hi}]",
+            "n": int(mask.sum()),
+            "mean_return": float(bucket_returns.mean()) if len(bucket_returns) else None,
+            "median_return": float(bucket_returns.median()) if len(bucket_returns) else None,
+            "win_rate": float((bucket_returns > 0).mean()) if len(bucket_returns) else None,
+        })
+
     results = {
         "train_window": [TRAIN_START, TRAIN_END],
         "test_window": [TEST_START, TEST_END],
         "test_trading_days": n_periods,
+        "out_of_sample_cross_sectional_ic": oos_ic,
         "budget": budget,
         "trades_executed": int(selector.trades_taken),
         "entries": len(entries),
@@ -117,11 +164,13 @@ def main() -> None:
         "mean_excess_return_per_trade_vs_market": float(entry_excess.mean()) if len(entries) else None,
         "size_weighted_mean_return": float((entry_raw * entries["position_size_pct"]).sum() / entries["position_size_pct"].sum()) if len(entries) else None,
         "baseline_mean_return_all_candidates": float(all_eligible_raw.mean()),
+        "return_by_rank_bucket": rank_bucket_stats,
     }
 
     RESULT_PATH.write_text(json.dumps(results, indent=2) + "\n")
 
     print("\n" + "=" * 72)
+    print(f"Out-of-sample cross-sectional IC: {oos_ic:+.4f}")
     print(f"Entries: {len(entries)}  Exits: {len(exits)}  Still open: {selector.open_positions_count}  "
           f"Force-closed: {len(selector.force_close_log)}")
     print(f"Win rate: {results['win_rate']:.1%}" if results["win_rate"] is not None else "Win rate: n/a")
@@ -129,6 +178,11 @@ def main() -> None:
     print(f"Mean excess return/trade vs. that day's market: {results['mean_excess_return_per_trade_vs_market']:+.4%}")
     print(f"Size-weighted mean return: {results['size_weighted_mean_return']:+.4%}")
     print(f"Baseline (every eligible candidate, unranked): {results['baseline_mean_return_all_candidates']:+.4%}")
+    print("\nReturn by rank bucket (is the top pick actually the best pick?):")
+    for row in rank_bucket_stats:
+        if row["n"]:
+            print(f"  rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
+                  f"median={row['median_return']:+.4%}  win_rate={row['win_rate']:.1%}")
     print(f"\nSaved: {RESULT_PATH}")
 
 

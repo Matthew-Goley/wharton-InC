@@ -1,0 +1,61 @@
+{
+  "train_window": [
+    "2018-01-01",
+    "2024-01-01"
+  ],
+  "test_window": [
+    "2024-01-01",
+    "2026-01-01"
+  ],
+  "test_trading_days": 497,
+  "out_of_sample_cross_sectional_ic": 0.020900032858868312,
+  "budget": 1988,
+  "trades_executed": 1988,
+  "entries": 994,
+  "exits": 994,
+  "still_open_at_end": 0,
+  "force_closed": 0,
+  "win_rate": 0.5020120724346077,
+  "mean_return_per_trade_raw": -0.0012546266946469689,
+  "median_return_per_trade_raw": 0.0007669780177010921,
+  "mean_excess_return_per_trade_vs_market": -0.00044551123697095284,
+  "size_weighted_mean_return": -0.001458111851300607,
+  "baseline_mean_return_all_candidates": 0.002294895487997103,
+  "return_by_rank_bucket": [
+    {
+      "rank_range": "(0, 1]",
+      "n": 62,
+      "mean_return": -0.04113242228250543,
+      "median_return": -0.03082047323153675,
+      "win_rate": 0.2903225806451613
+    },
+    {
+      "rank_range": "(1, 3]",
+      "n": 187,
+      "mean_return": 0.0005117975183719643,
+      "median_return": -0.0002538289334381716,
+      "win_rate": 0.49732620320855614
+    },
+    {
+      "rank_range": "(3, 5]",
+      "n": 168,
+      "mean_return": 0.008629442379723809,
+      "median_return": 0.0035105320561181763,
+      "win_rate": 0.5297619047619048
+    },
+    {
+      "rank_range": "(5, 10]",
+      "n": 351,
+      "mean_return": 0.0019460313936582293,
+      "median_return": 0.003034854986515345,
+      "win_rate": 0.5327635327635327
+    },
+    {
+      "rank_range": "(10, 10000]",
+      "n": 226,
+      "mean_return": -0.004094682424190022,
+      "median_return": -0.000430801327710173,
+      "win_rate": 0.49557522123893805
+    }
+  ]
+}
