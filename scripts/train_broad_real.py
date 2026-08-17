@@ -17,13 +17,17 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import joblib
+
 from src.config import BROAD_EXPERT, BaselineConfig, ExpertSpec
 from src.data_layer import RealDataProvider
 from src.experts.base import ExpertModel
 from src.experts.registry import build_expert_data
 from src.ga.search import GeneticSearch, default_max_workers
 
-LOG_PATH = Path(__file__).resolve().parents[1] / "data" / "processed" / "broad_expert_search_log.jsonl"
+DATA_PROCESSED = Path(__file__).resolve().parents[1] / "data" / "processed"
+LOG_PATH = DATA_PROCESSED / "broad_expert_search_log.jsonl"
+MODEL_PATH = DATA_PROCESSED / "broad_expert_model.joblib"
 
 
 def log(record: dict) -> None:
@@ -70,8 +74,18 @@ def main() -> None:
 
     print("\nTraining the final broad expert on the best config found...")
     model = ExpertModel(BROAD_EXPERT, result.best_genome, random_seed=config.ga.random_seed).fit(edata.X, edata.y)
+
+    # A ~7-8 hour search producing a model that only exists in this
+    # process's memory is a real trap -- the moment the process exits, the
+    # only artifact left is the genome (recoverable, but a full walk-forward
+    # search away from being trained again). Persist the actual fitted
+    # model, not just what it took to find it.
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, MODEL_PATH)
+
     print("Done. Best genome:", result.best_genome)
     print("Log:", LOG_PATH)
+    print("Model:", MODEL_PATH)
 
 
 if __name__ == "__main__":

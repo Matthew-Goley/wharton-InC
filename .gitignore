@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 
-# training run logs -- regenerated every run, not source
+# training run logs and model artifacts -- regenerated every run, not source
 data/processed/*.jsonl
 data/processed/*_stdout.log
+data/processed/*.joblib
