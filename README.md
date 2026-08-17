@@ -101,8 +101,7 @@ python -m scripts.run_baseline_demo # full pipeline on synthetic data (~30-60s)
 ## The real Data Layer
 
 `src.data_layer.RealDataProvider` reads the actual `data/raw/training/*.csv`
-price files: real feature engineering (moving averages, volatility,
-standard ATR from true O/H/L/C), an N-day forward return target (N =
+price files: feature engineering, an N-day forward return target (N =
 `hold_days`), and point-in-time universe filtering (as-of join against
 `data/processed/sp500_membership.csv`, avoiding survivorship bias). Uses
 `Close`, never `Adj Close` — the latter is retroactively rewritten on every
@@ -111,9 +110,42 @@ dividend, which leaks future information into the past.
 Validated before trusting it with a long run: a negative control (pure
 noise target — mean IC ≈ 0, no leakage) and a positive control (planted
 signal recovered near its theoretical ceiling) confirm the pipeline itself
-is correct; a single-genome check on the real CSVs then showed weak but
-real signal (mean IC ≈ +0.017, varying across folds — the believable shape
-for real technical-feature prediction, not a leak).
+is correct.
+
+**Every feature is scale-free and the target is cross-sectionally demeaned.**
+The first version used raw `ma_5`/`ma_20`/`ma_60`/`atr_14`, which are dollar
+amounts — pooled across a universe spanning \$12 to \$96,938 a share they
+encoded "how expensive is one share", and all four measured as noise
+(per-date IC t-stats +0.92 to +1.27). Re-expressed as ratios the same
+information becomes usable: `px_to_ma_20` is now the single strongest
+feature at t = −3.59. Four of eight features now clear |t| > 2, against two
+of seven before. The target is each name's forward return minus that date's
+universe mean, which removes the ~33% of variance that is just the whole
+market moving — unforecastable from one stock's own history.
+`fwd_return_raw` and `market_fwd_return` stay in the frame for reporting.
+
+**Jump ratio.** `jump_ratio` implements the Med_k standardized return of
+Khashanah, Chen, Buckle & Hawkes (*JRSS-C* 2025) — today's log return over a
+jump-robust local volatility built from a running median of k = 9 absolute
+returns. A median denominator, unlike bipower variation, is not inflated by
+a *cluster* of large moves, so consecutive jumps don't mask each other (on
+the 2010 flash crash, bipower variation exceeded realized variance and
+reported no jumps at all). Adapted for prediction rather than detection: the
+window is trailing rather than centred, and the denominator is lagged one
+period so a jump never contributes to the volatility it is measured against.
+On its own it is not yet significant (t = −1.74).
+
+**Fitness is mean per-date IC, not pooled.** `cross_sectional_ic` computes
+rank correlation *within* each date, then averages. Pooling every
+(ticker, date) row into one correlation mixes stock-picking skill with
+"which days were up days", and the two disagree even in sign —
+`volatility_20` scores +0.0386 pooled and +0.0027 per-date. Fold geometry is
+sized against that metric's noise: per-date IC has a standard deviation of
+~0.19, so the old 100-period validation windows had a standard error of
+0.019 against a signal of ~0.013, and the search was ranking candidates on
+luck. The current 4 × 315-period folds give ~0.0054 averaged — a
+signal-to-noise ratio of 2.4x, up from 1.4x — and now reach the final day of
+the data instead of stopping 17 months short.
 
 **Known gap: no sector data yet.** No sector classification has been
 sourced (`config/sector_map.py` doesn't exist per CLAUDE.md's plan), so

@@ -7,7 +7,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_layer.real_provider import RealDataProvider
+from src.data_layer.real_provider import (
+    FEATURE_COLUMNS,
+    MARKET_TARGET_COLUMN,
+    RAW_TARGET_COLUMN,
+    TARGET_COLUMN,
+    RealDataProvider,
+    jump_ratio,
+)
 
 # Observation dates for the fixture. Membership only changes on these, so a
 # date in between resolves back to the most recent one.
@@ -135,5 +142,136 @@ def test_features_come_from_close_not_adj_close(fixture_dirs):
         universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv
     )
     frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
-    # Adj Close is a constant 1.0 in the fixture; real Close is ~100+.
-    assert (frame["ma_5"] > 50).all()
+    # Adj Close is a constant 1.0 in the fixture, so anything derived from it
+    # would be identically zero. Real Close moves.
+    assert frame["momentum_10"].abs().sum() > 0
+    assert frame["px_to_ma_20"].abs().sum() > 0
+
+
+# --- scale-free features ---------------------------------------------------
+
+def _write_prices(data_dir, ticker, close):
+    dates = pd.bdate_range("2019-06-03", periods=len(close))
+    pd.DataFrame(
+        {
+            "timestamp": dates, "Open": close * 0.999, "High": close * 1.01,
+            "Low": close * 0.99, "Close": close, "Adj Close": close,
+            "Volume": 1_000_000,
+        }
+    ).to_csv(data_dir / f"{ticker}_1d.csv", index=False)
+    return dates
+
+
+def test_features_are_invariant_to_share_price(tmp_path):
+    """A $5 stock and a $500 stock with the same shape must look identical.
+
+    This is the whole point of the scale-free rewrite: raw moving averages
+    pooled across the universe encoded share price, not behaviour.
+    """
+    data_dir = tmp_path / "training"
+    data_dir.mkdir()
+    rng = np.random.default_rng(0)
+    base = 50 * np.exp(np.cumsum(rng.normal(0, 0.01, 400)))
+    dates = _write_prices(data_dir, "CHEAP", base)
+    _write_prices(data_dir, "PRICEY", base * 100.0)  # identical shape, 100x
+
+    membership_csv = tmp_path / "m.csv"
+    pd.DataFrame(
+        [{"date": dates[0], "ticker": t, "ticker_asof": t} for t in ("CHEAP", "PRICEY")]
+    ).to_csv(membership_csv, index=False)
+
+    provider = RealDataProvider(
+        universe=["CHEAP", "PRICEY"], data_dir=data_dir,
+        membership_csv=membership_csv, demean_target=False,
+    )
+    frame = provider.get_feature_table("2019-01-01", "2030-01-01", hold_days=5).frame
+    cheap = frame.xs("CHEAP", level="ticker")[FEATURE_COLUMNS]
+    pricey = frame.xs("PRICEY", level="ticker")[FEATURE_COLUMNS]
+    pd.testing.assert_frame_equal(cheap, pricey, atol=1e-9, check_exact=False)
+
+
+# --- cross-sectionally demeaned target -------------------------------------
+
+def test_demeaned_target_sums_to_zero_each_date(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir,
+        membership_csv=membership_csv, demean_target=True,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    per_date = frame.groupby(level="timestamp")[TARGET_COLUMN].mean()
+    assert np.allclose(per_date.to_numpy(), 0.0, atol=1e-12)
+    # the raw label and the market leg it was split into are both retained
+    assert RAW_TARGET_COLUMN in frame.columns
+    assert MARKET_TARGET_COLUMN in frame.columns
+    assert np.allclose(
+        (frame[RAW_TARGET_COLUMN] - frame[MARKET_TARGET_COLUMN]).to_numpy(),
+        frame[TARGET_COLUMN].to_numpy(),
+    )
+
+
+def test_demeaning_can_be_disabled(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir,
+        membership_csv=membership_csv, demean_target=False,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert RAW_TARGET_COLUMN not in frame.columns
+    per_date = frame.groupby(level="timestamp")[TARGET_COLUMN].mean()
+    assert not np.allclose(per_date.to_numpy(), 0.0, atol=1e-12)
+
+
+# --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
+
+def _quiet_returns(n=400, scale=0.01, seed=0):
+    return np.random.default_rng(seed).normal(0, scale, n)
+
+
+def _series_from_returns(returns):
+    return pd.Series(100 * np.exp(np.cumsum(returns)))
+
+
+def test_jump_ratio_is_scale_invariant():
+    close = _series_from_returns(_quiet_returns())
+    pd.testing.assert_series_equal(jump_ratio(close), jump_ratio(close * 1000.0))
+
+
+def test_jump_ratio_flags_a_planted_jump():
+    returns = _quiet_returns()
+    returns[300] = 0.12  # ~12 sigma against a 1% daily vol
+    ratio = jump_ratio(_series_from_returns(returns))
+    assert abs(ratio.iloc[300]) > 6
+    # a normal day nearby stays small
+    assert abs(ratio.iloc[290]) < 4
+
+
+def test_jump_ratio_survives_clustered_jumps():
+    """The paper's central claim, and the reason for a median denominator.
+
+    Bipower-style estimators multiply adjacent absolute returns, so a run of
+    large moves inflates the denominator and the cluster masks itself — on the
+    2010 flash crash that pushed BV above RV and reported no jumps at all. A
+    running median over k=9 absorbs up to four large returns in the block.
+    """
+    returns = _quiet_returns()
+    returns[300:305] = [0.10, -0.09, 0.11, -0.08, 0.10]  # five in a row
+    close = _series_from_returns(returns)
+    ratio = jump_ratio(close)
+    assert (ratio.iloc[300:305].abs() > 5).all(), "clustered jumps were masked"
+
+    # A plain rolling-std denominator gets inflated by the cluster and mutes
+    # the later members — the failure mode Med_k exists to avoid.
+    log_r = np.log(close).diff()
+    naive = log_r / log_r.rolling(63, min_periods=31).std().shift(1)
+    assert naive.iloc[304:305].abs().item() < ratio.iloc[304:305].abs().item()
+
+
+def test_jump_ratio_leading_values_are_nan_not_zero():
+    ratio = jump_ratio(_series_from_returns(_quiet_returns()))
+    assert ratio.iloc[:9].isna().all()  # "unknown", not "no jump"
+
+
+def test_jump_ratio_rejects_unsupported_k():
+    with pytest.raises(ValueError, match="Med_k scale constant"):
+        jump_ratio(_series_from_returns(_quiet_returns()), k=4)

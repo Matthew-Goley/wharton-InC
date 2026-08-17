@@ -77,9 +77,25 @@ class HyperparamSpace:
 
 @dataclass(frozen=True)
 class WalkForwardConfig:
+    """Fold geometry for the GA's fitness estimate.
+
+    Sized against the measurement noise, not by eye. Cross-sectional IC has a
+    standard deviation of about 0.19 across dates on the real universe, while
+    the signal being hunted is around 0.013. A fold's standard error is
+    therefore ~0.19/sqrt(val_periods), and the earlier 100-period windows put
+    it at 0.019 — larger than the effect itself, which meant the search was
+    ranking candidates mostly on luck.
+
+    The values below give ~0.0107 per fold and ~0.0054 once four folds are
+    averaged: a signal-to-noise ratio of roughly 2.4x, up from 1.4x. They are
+    also chosen so the last fold's validation window lands on the final day of
+    the current ~2,006-day history (746 = 2006 - 4*315) instead of stopping 17
+    months short and never testing recent data.
+    """
+
     n_splits: int = 4
-    min_train_periods: int = 500  # rows, not calendar time
-    val_periods: int = 100
+    min_train_periods: int = 746  # periods, not calendar time (~3 years)
+    val_periods: int = 315  # ~15 months; short windows cannot resolve IC~0.013
     expanding: bool = True  # expanding window vs. fixed-size rolling window
 
 

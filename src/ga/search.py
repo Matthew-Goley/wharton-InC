@@ -1,8 +1,12 @@
 """Genetic hyperparameter search (architecture §3) — one run per expert.
 
-Fitness is mean out-of-fold Information Coefficient (rank correlation
-between predicted and realized return) across walk-forward validation
-folds: "train on past, test on unseen future," per the architecture doc.
+Fitness is the mean out-of-fold **cross-sectional** Information Coefficient
+across walk-forward validation folds: "train on past, test on unseen
+future," per the architecture doc. Within each fold the IC is computed per
+date and then averaged, not pooled over every (ticker, date) row at once —
+see :func:`src.evaluation.metrics.cross_sectional_ic` for why that
+distinction decides whether the search optimizes stock-picking skill or
+untradeable market-regime structure.
 
 A population's fitness evaluations are independent of each other, so with
 ``max_workers > 1`` they run across a process pool instead of one at a
@@ -24,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 from src.config import GAConfig, HyperparamSpace, WalkForwardConfig
-from src.evaluation.metrics import information_coefficient
+from src.evaluation.metrics import cross_sectional_ic
 from src.evaluation.walk_forward import generate_walk_forward_splits
 from src.experts.base import ExpertModel, XGBConfig
 from src.ga.population import Individual, Population
@@ -74,7 +78,8 @@ def _evaluate_fitness(
             )
             preds = model.predict(split.val[feature_columns])
             fold_scores.append(
-                information_coefficient(
+                cross_sectional_ic(
+                    split.val.index.get_level_values("timestamp").to_numpy(),
                     split.val[target_column].to_numpy(),
                     preds["predicted_return"].to_numpy(),
                 )

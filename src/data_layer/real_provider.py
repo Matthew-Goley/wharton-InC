@@ -1,7 +1,24 @@
 """Real Data Layer: reads the fetched wharton-InC price CSVs into a FeatureTable.
 
-Feature engineering mirrors MockDataProvider's shape exactly (same 7
-columns) so nothing downstream needs to know which provider is in use.
+Every feature here is **scale-free** and the target is **cross-sectionally
+demeaned**. Both are deliberate, and both replaced earlier versions that
+measured as pure noise:
+
+- The first cut used raw ``ma_5``/``ma_20``/``ma_60``/``atr_14``, which are
+  dollar amounts. Pooled across the universe, ``ma_20`` ran from $12 to
+  $96,938 on a single day, so those columns mostly encoded "how expensive is
+  one share" — which predicts nothing. Per-date IC t-statistics were +0.92,
+  +1.10, +1.27, +1.13: indistinguishable from zero. Re-expressed as ratios,
+  the same underlying information becomes usable (``ma_5/ma_20 - 1`` went
+  from t=+0.92 to t=-2.84). Trees are invariant to monotone transforms of a
+  *single* feature, but not to pooling different price regimes into one
+  column, which is what was happening.
+- The target is each name's forward return minus that date's universe mean.
+  About a third of the raw forward return's variance is the whole market
+  moving together, which nothing here can forecast; removing it lets the
+  model spend its capacity on relative performance, which is what the
+  selector actually acts on. ``fwd_return_raw`` and ``market_fwd_return`` are
+  kept alongside for reporting and cost checks.
 
 Two correctness rules taken directly from the wharton-InC README's
 "Gotchas" and CLAUDE.md's "no lookahead" rule:
@@ -36,13 +53,105 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAINING_DIR = REPO_ROOT / "data" / "raw" / "training"
 MEMBERSHIP_CSV = REPO_ROOT / "data" / "processed" / "sp500_membership.csv"
 
-FEATURE_COLUMNS: list[str] = ["ma_5", "ma_20", "ma_60", "volatility_20", "atr_14", "momentum_10", "momentum_30"]
+FEATURE_COLUMNS: list[str] = [
+    "px_to_ma_20",     # close vs its 20d average — distance from trend
+    "ma_5_over_20",    # short vs medium trend
+    "ma_20_over_60",   # medium vs long trend
+    "volatility_20",   # already unitless (std of returns)
+    "atr_pct",         # true range as a fraction of price
+    "momentum_10",     # already unitless (pct change)
+    "momentum_30",
+    "jump_ratio",      # today's move in jump-robust local sigma (see below)
+]
 TARGET_COLUMN = "fwd_return"
+#: Kept in the frame but never fed to a model — the un-demeaned label and the
+#: market component removed from it, for reporting and cost-model checks.
+RAW_TARGET_COLUMN = "fwd_return_raw"
+MARKET_TARGET_COLUMN = "market_fwd_return"
 UNKNOWN_SECTOR = "Unknown"
 
-#: Rolling windows go up to 60 days; shorter histories would be nothing but
-#: min_periods=1 fallback for their entire life, not real features.
-_MIN_TICKER_ROWS = 60
+# --- jump ratio (Khashanah, Chen, Buckle & Hawkes, JRSS-C 2025) -------------
+#: Window of consecutive absolute returns the running median is taken over.
+#: The paper's Med_k estimator generalizes Andersen, Dobrev & Schaumburg's
+#: MedRV (k=3) to k = 3, 5, 7, 9; a block of k can absorb up to (k-1)//2 large
+#: returns, so k=9 survives a cluster of four. The paper settles on k=9 for
+#: the S&P 500, which is the same index this universe is drawn from.
+JUMP_MED_K = 9
+#: Trailing window the local medians are averaged over to get a daily sigma.
+#: The paper averages across one trading day of 2-min bars; on daily bars the
+#: analogous "recent regime" span is a quarter.
+JUMP_VOL_WINDOW = 63
+#: c_k, chosen so Med_k is an unbiased estimator of realized volatility when
+#: returns are Gaussian (paper §3). c_3 is the classic MedRV constant
+#: pi/(6-4*sqrt(3)+pi).
+MED_K_SCALE: dict[int, float] = {3: 1.41865, 5: 1.62360, 7: 1.74332, 9: 1.82184}
+
+#: Rolling windows go up to 60 days and the jump sigma needs JUMP_VOL_WINDOW
+#: more on top; shorter histories would be nothing but min_periods fallback
+#: for their entire life, not real features.
+_MIN_TICKER_ROWS = 60 + JUMP_VOL_WINDOW
+
+#: Floor for the jump-ratio denominator, so a dead-flat stretch (sigma == 0)
+#: cannot produce an infinite ratio.
+_MIN_JUMP_SIGMA = 1e-8
+
+
+def jump_ratio(
+    close: pd.Series,
+    k: int = JUMP_MED_K,
+    window: int = JUMP_VOL_WINDOW,
+) -> pd.Series:
+    """Today's log return in units of jump-robust local volatility.
+
+    Implements the Med_k standardized return of Khashanah, Chen, Buckle &
+    Hawkes (JRSS-C 2025, §3), adapted from their intraday setting to daily
+    bars. Their estimator of local volatility is a running median of ``k``
+    consecutive absolute returns, scaled by ``c_k`` so it is unbiased for
+    Gaussian returns:
+
+        Med_k(t) = c_k * median(|r_{t-k+1}|, ..., |r_t|)^2      (variance)
+        sigma(t) = sqrt( mean of Med_k over the trailing window )
+        ratio(t) = r_t / sigma(t-1)
+
+    Why a median rather than the usual bipower variation: bipower multiplies
+    *adjacent* absolute returns, so a cluster of large moves inflates the very
+    denominator meant to reveal them, and the jump masks itself. That is the
+    paper's central complaint about the RV-BV, LM and ABD tests — on the 2010
+    flash crash, six consecutive large returns pushed bipower variation above
+    realized variance, reporting *no jumps* on the most jump-heavy day in the
+    sample. A median over k=9 absorbs up to four large returns in the block
+    and keeps pointing at the real local volatility.
+
+    Two deliberate departures from the paper, both because this is a
+    *predictive feature* rather than an *ex-post detector*:
+
+    1. The window is trailing, not centred. The paper's Med_k(t,j) is centred
+       on interval j and its daily sigma averages every return in the day,
+       including ones after j. Here that would read the future, which
+       CLAUDE.md forbids outright.
+    2. The denominator is lagged one period (``sigma.shift(1)``), so a jump
+       never contributes to the volatility it is measured against. The median
+       already makes this contamination small; shifting removes it entirely
+       and costs nothing.
+
+    The result is kept **signed**, not absolute. The paper thresholds |ratio|
+    because it only asks "was this a jump?"; a model also wants to know which
+    way, since a -4 sigma move and a +4 sigma move imply opposite trades.
+
+    Leading values are NaN until enough history accumulates. They are left as
+    NaN rather than filled with 0.0, because "no jump" and "unknown" are
+    different claims and XGBoost routes missing values natively.
+    """
+    if k not in MED_K_SCALE:
+        raise ValueError(f"no Med_k scale constant for k={k}; have {sorted(MED_K_SCALE)}")
+
+    log_return = np.log(close).diff()
+    local_median = log_return.abs().rolling(k).median()
+    local_variance = MED_K_SCALE[k] * local_median.pow(2)
+    # min_periods at half the window so a ticker isn't blind for a full
+    # quarter; a sigma from ~30 observations is noisier but usable.
+    sigma = np.sqrt(local_variance.rolling(window, min_periods=window // 2).mean())
+    return log_return / sigma.shift(1).clip(lower=_MIN_JUMP_SIGMA)
 
 
 class RealDataProvider(DataProvider):
@@ -51,7 +160,11 @@ class RealDataProvider(DataProvider):
         universe: Optional[list[str]] = None,
         data_dir: Path = TRAINING_DIR,
         membership_csv: Path = MEMBERSHIP_CSV,
+        demean_target: bool = True,
     ):
+        #: When True (the default) the label is excess return over that date's
+        #: universe mean. See _demean_target for what that changes downstream.
+        self.demean_target = demean_target
         if universe is None:
             from config.training_universe import TRAINING_UNIVERSE  # local import: avoid a hard dependency at module load
             universe = TRAINING_UNIVERSE
@@ -99,6 +212,9 @@ class RealDataProvider(DataProvider):
         frame = frame[(timestamps >= start_ts) & (timestamps <= end_ts)]
         frame = self._filter_point_in_time(frame)
         frame = frame.sort_index()
+        # After the point-in-time filter, so the "market" is the roster that
+        # was actually investable that day rather than every name on file.
+        frame = self._demean_target(frame)
 
         return FeatureTable(
             frame=frame,
@@ -136,11 +252,20 @@ class RealDataProvider(DataProvider):
         # label a fixed-hold position's exit realizes, not next-bar return.
         fwd_return = close.pct_change(hold_days).shift(-hold_days)
 
+        # Everything below is a ratio. The moving averages and ATR above are
+        # intermediates in dollars and never leave this method — pooled across
+        # a universe spanning $12 to $96,938 a share they carry no signal (see
+        # the module docstring).
         df = pd.DataFrame(
             {
-                "ma_5": ma_5, "ma_20": ma_20, "ma_60": ma_60,
-                "volatility_20": volatility_20, "atr_14": atr_14,
-                "momentum_10": momentum_10, "momentum_30": momentum_30,
+                "px_to_ma_20": close / ma_20 - 1.0,
+                "ma_5_over_20": ma_5 / ma_20 - 1.0,
+                "ma_20_over_60": ma_20 / ma_60 - 1.0,
+                "volatility_20": volatility_20,
+                "atr_pct": atr_14 / close,
+                "momentum_10": momentum_10,
+                "momentum_30": momentum_30,
+                "jump_ratio": jump_ratio(close),
                 TARGET_COLUMN: fwd_return,
                 "sector": UNKNOWN_SECTOR,
             }
@@ -152,6 +277,43 @@ class RealDataProvider(DataProvider):
             return None
         df.index = pd.MultiIndex.from_product([[ticker], df.index], names=["ticker", "timestamp"])
         return df
+
+    def _demean_target(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Turn the label into excess return over that date's universe mean.
+
+        Roughly a third of the raw forward return's variance is simply the
+        whole market moving on a given day. No model built from one stock's
+        own price history can forecast that, so leaving it in the label spends
+        model capacity on an unwinnable problem and adds noise to every
+        fitness measurement. Subtracting the cross-sectional mean leaves the
+        part that is actually a stock-picking question: did this name beat its
+        peers?
+
+        This also lines the label up with how the system is scored and traded
+        — ``cross_sectional_ic`` ranks within a date, and ``TradeSelector``
+        takes the top N names on a date.
+
+        DOWNSTREAM CONSEQUENCE, worth being explicit about: predictions are now
+        *relative*. A name predicted to beat the universe by 0.5% can still
+        lose money outright in a falling market, and this system is long-only
+        with no hedge. The selection layer's cost filter
+        (``cost_model.clears_cost``) consequently reads as "expected
+        outperformance must clear round-trip costs", not "expected profit
+        must". ``fwd_return_raw`` and ``market_fwd_return`` are carried in the
+        frame so that check can be revisited against absolute returns without
+        rebuilding the table. Pass ``demean_target=False`` to opt out.
+        """
+        if not self.demean_target or frame.empty:
+            return frame
+        raw = frame[TARGET_COLUMN]
+        market = raw.groupby(level="timestamp").transform("mean")
+        return frame.assign(
+            **{
+                RAW_TARGET_COLUMN: raw,
+                MARKET_TARGET_COLUMN: market,
+                TARGET_COLUMN: raw - market,
+            }
+        )
 
     def _filter_point_in_time(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Keep only rows where the ticker was an S&P 500 member on that date.
