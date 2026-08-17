@@ -96,3 +96,19 @@ def test_rank_orders_within_timestamp_independently():
 def test_rejects_missing_or_duplicate_broad_expert():
     with pytest.raises(ValueError):
         OverallModel((TECH,))  # no broad expert at all
+
+
+def test_broad_only_with_zero_sector_experts_configured():
+    """No sector experts in the roster at all (not just no data for one
+    ticker) — the real-world case until sector data exists. Regression test:
+    the empty-sector fallback frame used to have a bare RangeIndex with no
+    named levels, which broke the join against broad's MultiIndex."""
+    model = OverallModel((BROAD,))
+    predictions = {"broad": _preds({("AAA", T0): (0.05, 0.9), ("BBB", T0): (-0.02, 0.5)})}
+    combined = model.combine(predictions)
+    ranked = model.rank(combined)
+
+    assert combined.loc[("AAA", T0), "combined_score"] == pytest.approx(0.05)
+    assert combined.loc[("AAA", T0), "n_experts"] == 1
+    assert ranked.loc[("AAA", T0), "rank"] == 1
+    assert ranked.loc[("BBB", T0), "rank"] == 2

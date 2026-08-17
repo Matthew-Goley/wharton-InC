@@ -44,11 +44,18 @@ class OverallModel:
         # Sector membership is disjoint (a ticker belongs to one sector), so
         # concatenating sector predictions never produces overlapping index
         # entries — a plain outer join against `broad` is safe.
-        sector_combined = (
-            pd.concat(sector_frames)
-            if sector_frames
-            else pd.DataFrame(columns=["sector_return", "sector_confidence", "sector_expert"])
-        )
+        if sector_frames:
+            sector_combined = pd.concat(sector_frames)
+        else:
+            # No sector experts configured at all (e.g. sector data isn't
+            # available yet, broad-only run) — an empty frame with a bare
+            # RangeIndex has no named levels to join broad's MultiIndex
+            # against ("cannot join with no overlapping index names"), so
+            # it needs the same (ticker, timestamp) index shape, just empty.
+            sector_combined = pd.DataFrame(
+                columns=["sector_return", "sector_confidence", "sector_expert"],
+                index=broad.index[:0],
+            )
 
         merged = broad.join(sector_combined, how="left")
         has_sector = merged["sector_return"].notna()
