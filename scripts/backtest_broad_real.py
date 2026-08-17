@@ -21,8 +21,19 @@ rank-1: the single most-confident pick each day scored -4.1% mean / -3.1%
 median / 29% win rate, systematically bad, not a few outliers -- while ranks
 2-10 were all flat-to-positive (best: rank 3-5 at +0.86% mean, 53% win
 rate). The model's *ranking* is real; blindly taking its single most extreme
-prediction each day is not a good way to use it. See return_by_rank_bucket
-in the saved JSON before trusting any future run's headline numbers.
+prediction each day is not a good way to use it.
+
+SPLIT-SAMPLE VALIDATION (2024 vs. 2025, each independent of the other and of
+the pooled analysis above that first surfaced the pattern): rank-1-is-bad and
+rank-3-5-is-good both hold their direction in both years separately --
+genuine evidence, not a pooled-window fluke. Ranks 5-10 and 10+ do NOT: they
+looked fine pooled (blending a good 2024 and a bad 2025) but flip sign
+between the two years on their own, which means the pooled number for those
+buckets was hiding a regime flip, not describing a dependable pattern. Only
+trust rank 1 (avoid) and rank 3-5 (favor) from this; everything else needs
+more data before it means anything. See return_by_rank_bucket and
+split_sample_validation in the saved JSON before trusting any future run's
+headline numbers.
 
 Usage:
     python -m scripts.backtest_broad_real
@@ -34,6 +45,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.combiner.overall_model import OverallModel
@@ -65,6 +77,46 @@ BEST_GENOME = XGBConfig(
 )
 
 RESULT_PATH = Path(__file__).resolve().parents[1] / "data" / "processed" / "backtest_broad_real.json"
+
+
+def _rank_bucket_stats(entries: pd.DataFrame, entry_raw: pd.Series) -> list[dict]:
+    """Mean/median/win-rate return per RANK_BUCKETS slice, over whatever
+    subset of `entries` (already index-aligned with `entry_raw`) is passed
+    in -- the full window, or one sub-period of it."""
+    stats = []
+    for lo, hi in RANK_BUCKETS:
+        mask = ((entries["rank"] > lo) & (entries["rank"] <= hi)).to_numpy()
+        bucket_returns = entry_raw.to_numpy()[mask]
+        stats.append({
+            "rank_range": f"({lo}, {hi}]",
+            "n": int(mask.sum()),
+            "mean_return": float(bucket_returns.mean()) if len(bucket_returns) else None,
+            "median_return": float(np.median(bucket_returns)) if len(bucket_returns) else None,
+            "win_rate": float((bucket_returns > 0).mean()) if len(bucket_returns) else None,
+        })
+    return stats
+
+
+def _split_sample_validation(entries: pd.DataFrame, entry_raw: pd.Series) -> dict:
+    """Splits entries by calendar year and computes rank-bucket stats
+    independently in each -- checks whether a bucket's direction (not just
+    its pooled-window magnitude) actually replicates, since a pooled number
+    can blend a good year and a bad year into something that looks like a
+    stable, mediocre pattern when neither year alone supports that."""
+    dates = entries.index.get_level_values("timestamp")
+    years = sorted(dates.year.unique())
+    by_year = {}
+    for year in years:
+        mask = np.asarray(dates.year == year)
+        by_year[str(year)] = _rank_bucket_stats(entries[mask], entry_raw[mask])
+
+    consistent = {}
+    for i, (lo, hi) in enumerate(RANK_BUCKETS):
+        means = [by_year[str(y)][i]["mean_return"] for y in years]
+        means = [m for m in means if m is not None]
+        consistent[f"({lo}, {hi}]"] = bool(means) and (all(m > 0 for m in means) or all(m < 0 for m in means))
+
+    return {"by_year": by_year, "direction_consistent_across_years": consistent}
 
 
 def main() -> None:
@@ -135,17 +187,8 @@ def main() -> None:
     # whether ranking adds anything beyond the eligibility filter alone.
     all_eligible_raw = test_data.frame[RAW_TARGET_COLUMN]
 
-    rank_bucket_stats = []
-    for lo, hi in RANK_BUCKETS:
-        mask = (entries["rank"] > lo) & (entries["rank"] <= hi)
-        bucket_returns = entry_raw[mask.to_numpy()]
-        rank_bucket_stats.append({
-            "rank_range": f"({lo}, {hi}]",
-            "n": int(mask.sum()),
-            "mean_return": float(bucket_returns.mean()) if len(bucket_returns) else None,
-            "median_return": float(bucket_returns.median()) if len(bucket_returns) else None,
-            "win_rate": float((bucket_returns > 0).mean()) if len(bucket_returns) else None,
-        })
+    rank_bucket_stats = _rank_bucket_stats(entries, entry_raw)
+    split_validation = _split_sample_validation(entries, entry_raw)
 
     results = {
         "train_window": [TRAIN_START, TRAIN_END],
@@ -165,6 +208,7 @@ def main() -> None:
         "size_weighted_mean_return": float((entry_raw * entries["position_size_pct"]).sum() / entries["position_size_pct"].sum()) if len(entries) else None,
         "baseline_mean_return_all_candidates": float(all_eligible_raw.mean()),
         "return_by_rank_bucket": rank_bucket_stats,
+        "split_sample_validation": split_validation,
     }
 
     RESULT_PATH.write_text(json.dumps(results, indent=2) + "\n")
@@ -183,6 +227,17 @@ def main() -> None:
         if row["n"]:
             print(f"  rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
                   f"median={row['median_return']:+.4%}  win_rate={row['win_rate']:.1%}")
+
+    print("\nSplit-sample validation (does each bucket hold its direction across years independently?):")
+    for year, year_stats in split_validation["by_year"].items():
+        print(f"  {year}:")
+        for row in year_stats:
+            if row["n"]:
+                print(f"    rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
+                      f"win_rate={row['win_rate']:.1%}")
+    print("  consistent across years:", {
+        k: ("YES" if v else "no") for k, v in split_validation["direction_consistent_across_years"].items()
+    })
     print(f"\nSaved: {RESULT_PATH}")
 
 
