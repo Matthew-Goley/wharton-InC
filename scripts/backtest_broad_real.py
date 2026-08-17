@@ -97,18 +97,39 @@ def _rank_bucket_stats(entries: pd.DataFrame, entry_raw: pd.Series) -> list[dict
     return stats
 
 
-def _split_sample_validation(entries: pd.DataFrame, entry_raw: pd.Series) -> dict:
+def _split_sample_validation(
+    entries: pd.DataFrame, entry_raw: pd.Series, all_trading_days: np.ndarray, hold_days: int
+) -> dict:
     """Splits entries by calendar year and computes rank-bucket stats
     independently in each -- checks whether a bucket's direction (not just
     its pooled-window magnitude) actually replicates, since a pooled number
     can blend a good year and a bad year into something that looks like a
-    stable, mediocre pattern when neither year alone supports that."""
+    stable, mediocre pattern when neither year alone supports that.
+
+    Purged/embargoed at the boundary: an entry within the last `hold_days`
+    TRADING days of a year has its hold_days-forward label resolving into
+    the following year, so it can't be cleanly attributed to either side --
+    it's dropped from the split rather than left to blur whichever side
+    it's nominally dated into (the year split is otherwise not a clean
+    train/test-style boundary, since the label horizon crosses it).
+    """
     dates = entries.index.get_level_values("timestamp")
-    years = sorted(dates.year.unique())
+    all_years = pd.DatetimeIndex(all_trading_days).year
+    years = sorted(pd.unique(all_years))
+
+    embargoed_days = set()
+    for year in years[:-1]:  # the last year has no "next year" to bleed into
+        year_days = np.sort(all_trading_days[all_years == year])
+        embargoed_days.update(year_days[-hold_days:] if len(year_days) >= hold_days else year_days)
+
+    embargo_mask = dates.isin(embargoed_days)
+    kept, kept_raw = entries[~embargo_mask], entry_raw[~embargo_mask]
+    kept_dates = kept.index.get_level_values("timestamp")
+
     by_year = {}
     for year in years:
-        mask = np.asarray(dates.year == year)
-        by_year[str(year)] = _rank_bucket_stats(entries[mask], entry_raw[mask])
+        mask = np.asarray(kept_dates.year == year)
+        by_year[str(year)] = _rank_bucket_stats(kept[mask], kept_raw[mask])
 
     consistent = {}
     for i, (lo, hi) in enumerate(RANK_BUCKETS):
@@ -116,7 +137,11 @@ def _split_sample_validation(entries: pd.DataFrame, entry_raw: pd.Series) -> dic
         means = [m for m in means if m is not None]
         consistent[f"({lo}, {hi}]"] = bool(means) and (all(m > 0 for m in means) or all(m < 0 for m in means))
 
-    return {"by_year": by_year, "direction_consistent_across_years": consistent}
+    return {
+        "by_year": by_year,
+        "direction_consistent_across_years": consistent,
+        "embargoed_entries": int(embargo_mask.sum()),
+    }
 
 
 def main() -> None:
@@ -188,7 +213,8 @@ def main() -> None:
     all_eligible_raw = test_data.frame[RAW_TARGET_COLUMN]
 
     rank_bucket_stats = _rank_bucket_stats(entries, entry_raw)
-    split_validation = _split_sample_validation(entries, entry_raw)
+    all_trading_days = test_data.frame.index.get_level_values("timestamp").unique().to_numpy()
+    split_validation = _split_sample_validation(entries, entry_raw, all_trading_days, config.trading.hold_days)
 
     results = {
         "train_window": [TRAIN_START, TRAIN_END],
@@ -228,7 +254,9 @@ def main() -> None:
             print(f"  rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
                   f"median={row['median_return']:+.4%}  win_rate={row['win_rate']:.1%}")
 
-    print("\nSplit-sample validation (does each bucket hold its direction across years independently?):")
+    print(f"\nSplit-sample validation (embargoed {split_validation['embargoed_entries']} entries within "
+          f"{config.trading.hold_days} trading days of the year boundary -- their label resolves into the next "
+          f"year, so they can't be cleanly attributed to either side):")
     for year, year_stats in split_validation["by_year"].items():
         print(f"  {year}:")
         for row in year_stats:
