@@ -112,16 +112,31 @@ noise target — mean IC ≈ 0, no leakage) and a positive control (planted
 signal recovered near its theoretical ceiling) confirm the pipeline itself
 is correct.
 
-**Every feature is scale-free and the target is cross-sectionally demeaned.**
-The first version used raw `ma_5`/`ma_20`/`ma_60`/`atr_14`, which are dollar
-amounts — pooled across a universe spanning \$12 to \$96,938 a share they
-encoded "how expensive is one share", and all four measured as noise
-(per-date IC t-stats +0.92 to +1.27). Re-expressed as ratios the same
-information becomes usable: `px_to_ma_20` is now the single strongest
-feature at t = −3.59. Four of eight features now clear |t| > 2, against two
-of seven before. The target is each name's forward return minus that date's
-universe mean, which removes the ~33% of variance that is just the whole
-market moving — unforecastable from one stock's own history.
+**Features are scale-free, and chosen by documented effect rather than by
+measured strength.** The first version used raw `ma_5`/`ma_20`/`ma_60`/
+`atr_14`, which are dollar amounts — pooled across a universe spanning \$12
+to \$96,938 a share they encoded "how expensive is one share", and all four
+measured as noise. Everything is now a ratio, except `log_dollar_volume` and
+`amihud_20` where the dollar amount *is* the economic quantity (size, and
+price impact per dollar traded).
+
+The current 15 are one or two representatives per documented cross-sectional
+effect: short-term reversal (Jegadeesh 1990), momentum skipping the recent
+stretch (Jegadeesh & Titman 1993), 52-week-high proximity (George & Hwang
+2004), idiosyncratic volatility (Ang et al. 2006), good-vs-bad volatility
+(Bollerslev et al.), lottery demand (Bali, Cakici & Whitelaw 2011), realized
+higher moments (Amaya et al.), illiquidity (Amihud 2002), size, volume
+dynamics, and Med_k jumps.
+
+**Selecting features on their t-statistics was tried and measured worse than
+not selecting at all.** On a 2018–2023 / 2024–2025 split, a set picked by
+|dev t| > 2.5 scored S/N 0.75 out of sample; the literature-assembled set
+scored 3.78 on the same holdout; throwing in all 32 candidates scored 3.01.
+Seven of the strongest in-sample features flipped sign out of sample. Add a
+feature because a paper says it should work, then let the walk-forward judge.
+
+The target is each name's forward return minus that date's universe mean,
+removing the ~33% of variance that is just the whole market moving.
 `fwd_return_raw` and `market_fwd_return` stay in the frame for reporting.
 
 **Jump ratio.** `jump_ratio` implements the Med_k standardized return of
@@ -146,6 +161,19 @@ sized against that metric's noise: per-date IC has a standard deviation of
 luck. The current 4 × 315-period folds give ~0.0054 averaged — a
 signal-to-noise ratio of 2.4x, up from 1.4x — and now reach the final day of
 the data instead of stopping 17 months short.
+
+**Where the signal actually stands.** Walk-forward, out of sample, with a
+fixed reference model: mean IC **+0.0114**, positive in 3 of 4 folds
+(−0.0116 / +0.0203 / +0.0147 / +0.0223). The negative fold is the
+2020-12→2022-03 meme-stock window, where reversal signals inverted. The old
+8-feature set scored +0.0020 on the same folds, so this is roughly a 6x
+improvement — but the level is still small, and regime-dependent.
+
+Two S/N figures, because the second is the honest one. Naive (`sd/√n`):
+**3.32**. Newey-West corrected: **1.98**. The label is a 5-day forward
+return computed daily, so adjacent dates share 4/5 of their target window;
+that autocorrelation inflates naive standard errors by ~1.65x here. Quote
+the Newey-West number.
 
 **Known gap: no sector data yet.** No sector classification has been
 sourced (`config/sector_map.py` doesn't exist per CLAUDE.md's plan), so

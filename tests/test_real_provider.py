@@ -144,7 +144,7 @@ def test_features_come_from_close_not_adj_close(fixture_dirs):
     frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
     # Adj Close is a constant 1.0 in the fixture, so anything derived from it
     # would be identically zero. Real Close moves.
-    assert frame["momentum_10"].abs().sum() > 0
+    assert frame["momentum_5"].abs().sum() > 0
     assert frame["px_to_ma_20"].abs().sum() > 0
 
 
@@ -162,11 +162,18 @@ def _write_prices(data_dir, ticker, close):
     return dates
 
 
+#: Deliberately price-dependent: both measure trading activity in dollars,
+#: where the dollar amount IS the economic quantity (size, and price impact
+#: per dollar traded) rather than a unit artefact.
+PRICE_DEPENDENT_BY_DESIGN = ["log_dollar_volume", "amihud_20"]
+
+
 def test_features_are_invariant_to_share_price(tmp_path):
     """A $5 stock and a $500 stock with the same shape must look identical.
 
     This is the whole point of the scale-free rewrite: raw moving averages
-    pooled across the universe encoded share price, not behaviour.
+    pooled across the universe encoded share price, not behaviour. The two
+    dollar-volume features are exempted and checked separately below.
     """
     data_dir = tmp_path / "training"
     data_dir.mkdir()
@@ -185,9 +192,18 @@ def test_features_are_invariant_to_share_price(tmp_path):
         membership_csv=membership_csv, demean_target=False,
     )
     frame = provider.get_feature_table("2019-01-01", "2030-01-01", hold_days=5).frame
-    cheap = frame.xs("CHEAP", level="ticker")[FEATURE_COLUMNS]
-    pricey = frame.xs("PRICEY", level="ticker")[FEATURE_COLUMNS]
-    pd.testing.assert_frame_equal(cheap, pricey, atol=1e-9, check_exact=False)
+    scale_free = [c for c in FEATURE_COLUMNS if c not in PRICE_DEPENDENT_BY_DESIGN]
+    cheap = frame.xs("CHEAP", level="ticker")
+    pricey = frame.xs("PRICEY", level="ticker")
+    pd.testing.assert_frame_equal(
+        cheap[scale_free], pricey[scale_free], atol=1e-9, check_exact=False
+    )
+    # ...and the exempted pair really does move with price, so the exemption
+    # is a documented choice rather than an untested assumption.
+    for col in PRICE_DEPENDENT_BY_DESIGN:
+        assert not np.allclose(
+            cheap[col].dropna().to_numpy(), pricey[col].dropna().to_numpy()
+        ), f"{col} was expected to depend on price level"
 
 
 # --- cross-sectionally demeaned target -------------------------------------

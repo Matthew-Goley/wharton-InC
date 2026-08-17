@@ -1,8 +1,18 @@
 """Real Data Layer: reads the fetched wharton-InC price CSVs into a FeatureTable.
 
-Every feature here is **scale-free** and the target is **cross-sectionally
-demeaned**. Both are deliberate, and both replaced earlier versions that
-measured as pure noise:
+Features are chosen by documented effect, not by measured strength. Selecting
+on t-statistics from this data was tried and measured *worse* than no
+selection at all: a set picked by |dev t| > 2.5 scored S/N 0.75 out of
+sample, while a set assembled purely from the anomalies literature scored
+3.78 on the same holdout. The strongest in-sample features were largely the
+ones that flipped sign out of sample. Add a feature here because a paper says
+it should work, then let the walk-forward tell you if it did.
+
+Every feature is **scale-free** — invariant to share price — except
+``log_dollar_volume`` and ``amihud_20``, where the dollar amount is the
+economic quantity (size, and price impact per dollar traded) rather than a
+unit artefact. The target is **cross-sectionally demeaned**. Both rules
+replaced earlier versions that measured as pure noise:
 
 - The first cut used raw ``ma_5``/``ma_20``/``ma_60``/``atr_14``, which are
   dollar amounts. Pooled across the universe, ``ma_20`` ran from $12 to
@@ -53,15 +63,36 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAINING_DIR = REPO_ROOT / "data" / "raw" / "training"
 MEMBERSHIP_CSV = REPO_ROOT / "data" / "processed" / "sp500_membership.csv"
 
+#: One or two representatives per documented cross-sectional effect. The set
+#: is fixed by *concept*, chosen from the literature before scoring anything —
+#: see the module docstring for why selecting on measured t-statistics turned
+#: out to be actively worse than not selecting at all.
 FEATURE_COLUMNS: list[str] = [
-    "px_to_ma_20",     # close vs its 20d average — distance from trend
-    "ma_5_over_20",    # short vs medium trend
-    "ma_20_over_60",   # medium vs long trend
-    "volatility_20",   # already unitless (std of returns)
-    "atr_pct",         # true range as a fraction of price
-    "momentum_10",     # already unitless (pct change)
-    "momentum_30",
-    "jump_ratio",      # today's move in jump-robust local sigma (see below)
+    # short-term reversal (Jegadeesh 1990)
+    "px_to_ma_20",
+    "momentum_5",
+    # momentum, skipping the most recent stretch (Jegadeesh & Titman 1993)
+    "momentum_60_skip_10",
+    # proximity to the 52-week high (George & Hwang 2004)
+    "pct_from_252d_high",
+    # idiosyncratic volatility (Ang, Hodrick, Xing & Zhang 2006)
+    "volatility_20",
+    # good vs bad volatility (Bollerslev et al.)
+    "semivol_skew",
+    # lottery demand — MAX and MIN (Bali, Cakici & Whitelaw 2011)
+    "max_ret_20",
+    "min_ret_20",
+    # higher moments of the return distribution (Amaya et al.)
+    "realized_skew_20",
+    "realized_kurt_20",
+    # illiquidity (Amihud 2002) and size
+    "amihud_20",
+    "log_dollar_volume",
+    # volume dynamics
+    "volume_shock",
+    "ret_vol_corr_20",
+    # jump-robust standardized return (Khashanah et al. 2025)
+    "jump_ratio",
 ]
 TARGET_COLUMN = "fwd_return"
 #: Kept in the frame but never fed to a model — the un-demeaned label and the
@@ -94,6 +125,9 @@ _MIN_TICKER_ROWS = 60 + JUMP_VOL_WINDOW
 #: Floor for the jump-ratio denominator, so a dead-flat stretch (sigma == 0)
 #: cannot produce an infinite ratio.
 _MIN_JUMP_SIGMA = 1e-8
+
+#: Guard for ratio denominators that can legitimately reach zero.
+_EPS = 1e-12
 
 
 def jump_ratio(
@@ -230,46 +264,52 @@ class RealDataProvider(DataProvider):
             return None
 
         close = raw["Close"]
-        prev_close = close.shift(1)
-
-        ma_5 = close.rolling(5, min_periods=1).mean()
+        volume = raw["Volume"]
+        returns = close.pct_change()
         ma_20 = close.rolling(20, min_periods=1).mean()
-        ma_60 = close.rolling(60, min_periods=1).mean()
-        volatility_20 = close.pct_change().rolling(20, min_periods=2).std().fillna(0.0)
 
-        # True Range (standard definition, now that real O/H/L/C are available):
-        # max(high-low, |high-prev_close|, |low-prev_close|).
-        true_range = pd.concat(
-            [raw["High"] - raw["Low"], (raw["High"] - prev_close).abs(), (raw["Low"] - prev_close).abs()],
-            axis=1,
-        ).max(axis=1)
-        atr_14 = true_range.rolling(14, min_periods=1).mean()
+        # Semivariance split — downside and upside volatility are priced
+        # differently (Bollerslev et al., "good" vs "bad" volatility).
+        downside = returns.where(returns < 0, 0.0).pow(2).rolling(20, min_periods=5).mean().pow(0.5)
+        upside = returns.where(returns > 0, 0.0).pow(2).rolling(20, min_periods=5).mean().pow(0.5)
 
-        momentum_10 = close.pct_change(10).fillna(0.0)
-        momentum_30 = close.pct_change(30).fillna(0.0)
+        dollar_volume = close * volume
 
         # N-day forward return, N = hold_days (exit_rule_spec.md §2) — the
         # label a fixed-hold position's exit realizes, not next-bar return.
         fwd_return = close.pct_change(hold_days).shift(-hold_days)
 
-        # Everything below is a ratio. The moving averages and ATR above are
-        # intermediates in dollars and never leave this method — pooled across
-        # a universe spanning $12 to $96,938 a share they carry no signal (see
-        # the module docstring).
+        # Every column below is scale-free (invariant to share price) except
+        # log_dollar_volume, which is deliberately a level — size is itself the
+        # documented predictor there, not a unit artefact.
         df = pd.DataFrame(
             {
                 "px_to_ma_20": close / ma_20 - 1.0,
-                "ma_5_over_20": ma_5 / ma_20 - 1.0,
-                "ma_20_over_60": ma_20 / ma_60 - 1.0,
-                "volatility_20": volatility_20,
-                "atr_pct": atr_14 / close,
-                "momentum_10": momentum_10,
-                "momentum_30": momentum_30,
+                "momentum_5": close.pct_change(5),
+                "momentum_60_skip_10": close.shift(10) / close.shift(60) - 1.0,
+                "pct_from_252d_high": close / close.rolling(252, min_periods=60).max() - 1.0,
+                "volatility_20": returns.rolling(20, min_periods=5).std(),
+                "semivol_skew": (upside - downside) / (upside + downside + _EPS),
+                "max_ret_20": returns.rolling(20, min_periods=5).max(),
+                "min_ret_20": returns.rolling(20, min_periods=5).min(),
+                "realized_skew_20": returns.rolling(20, min_periods=10).skew(),
+                "realized_kurt_20": returns.rolling(20, min_periods=10).kurt(),
+                # |return| per dollar traded. The +1 guards the thin-volume
+                # tail; 1e9 keeps log1p in a numerically useful range.
+                "amihud_20": np.log1p(
+                    (returns.abs() / (dollar_volume + 1.0)).rolling(20, min_periods=5).mean() * 1e9
+                ),
+                "log_dollar_volume": np.log1p(dollar_volume.rolling(20, min_periods=5).mean()),
+                "volume_shock": volume / (volume.rolling(20, min_periods=5).mean() + _EPS),
+                "ret_vol_corr_20": returns.rolling(20, min_periods=10).corr(volume.pct_change()),
                 "jump_ratio": jump_ratio(close),
                 TARGET_COLUMN: fwd_return,
                 "sector": UNKNOWN_SECTOR,
             }
         )
+        # A zero denominator anywhere above yields +/-inf, which XGBoost would
+        # treat as a real extreme rather than a gap. NaN is the honest encoding.
+        df = df.replace([np.inf, -np.inf], np.nan)
         # The last hold_days rows have no realized forward return yet — not
         # a feature gap to fill, a label that genuinely doesn't exist.
         df = df.dropna(subset=[TARGET_COLUMN])
