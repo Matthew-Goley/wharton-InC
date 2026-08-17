@@ -49,10 +49,15 @@ class XGBConfig:
 class ExpertModel:
     """A trained (or trainable) expert: predicts return + confidence."""
 
-    def __init__(self, name: str, config: XGBConfig, random_seed: int = 0):
+    def __init__(self, name: str, config: XGBConfig, random_seed: int = 0, n_jobs: int | None = None):
         self.name = name
         self.config = config
         self.random_seed = random_seed
+        #: Threads per fit. Leave None for XGBoost's default (all cores) —
+        #: right for a single one-off fit. Set to 1 when many fits run
+        #: concurrently across worker processes (GA search), so N processes
+        #: don't each also grab all cores and oversubscribe the machine.
+        self.n_jobs = n_jobs
         self._mean_model: XGBRegressor | None = None
         self._lo_model: XGBRegressor | None = None
         self._hi_model: XGBRegressor | None = None
@@ -61,6 +66,8 @@ class ExpertModel:
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "ExpertModel":
         params = self.config.as_xgb_params()
+        if self.n_jobs is not None:
+            params["n_jobs"] = self.n_jobs
 
         # Returns are typically small in magnitude (e.g. std ~0.01-0.05 for
         # daily bars). gamma/reg_alpha/reg_lambda are loss-reduction /

@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+
+# training run logs -- regenerated every run, not source
+data/processed/*.jsonl
+data/processed/*_stdout.log

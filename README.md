@@ -38,9 +38,10 @@ src/
   config.py          Central config: expert roster, GA settings, hyperparameter
                       search space, walk-forward settings, trading rules
                       (budget, long-only, cost margin, position cap).
-  data_layer/         §1 contract. interface.py defines DataProvider/
-                      FeatureTable; mock_provider.py is a synthetic stand-in
-                      so everything below is runnable without real data wired up.
+  data_layer/         §1. interface.py defines DataProvider/FeatureTable;
+                      mock_provider.py is a synthetic stand-in for fast
+                      iteration; real_provider.py reads the actual price
+                      CSVs (broad expert only until sector data exists).
   experts/            §2. ExpertModel wraps three XGBoost models (mean-return
                       regressor + two quantile regressors) into a single
                       predict_return + confidence output. registry.py slices
@@ -97,27 +98,29 @@ python -m pytest                    # unit tests (~2s)
 python -m scripts.run_baseline_demo # full pipeline on synthetic data (~30-60s)
 ```
 
-## Wiring in the real Data Layer
+## The real Data Layer
 
-Everything downstream depends only on `src.data_layer.DataProvider`:
+`src.data_layer.RealDataProvider` reads the actual `data/raw/training/*.csv`
+price files: real feature engineering (moving averages, volatility,
+standard ATR from true O/H/L/C), an N-day forward return target (N =
+`hold_days`), and point-in-time universe filtering (as-of join against
+`data/processed/sp500_membership.csv`, avoiding survivorship bias). Uses
+`Close`, never `Adj Close` — the latter is retroactively rewritten on every
+dividend, which leaks future information into the past.
 
-```python
-class DataProvider(ABC):
-    def get_feature_table(self, start: str, end: str, hold_days: int) -> FeatureTable: ...
-```
+Validated before trusting it with a long run: a negative control (pure
+noise target — mean IC ≈ 0, no leakage) and a positive control (planted
+signal recovered near its theoretical ceiling) confirm the pipeline itself
+is correct; a single-genome check on the real CSVs then showed weak but
+real signal (mean IC ≈ +0.017, varying across folds — the believable shape
+for real technical-feature prediction, not a leak).
 
-`FeatureTable` is a `(ticker, timestamp)`-indexed frame with named feature
-columns, a target column (an N-day forward return, N = `hold_days`,
-recorded on `target_horizon_days` so `train_baseline` can assert the label
-actually matches the selector's exit timing), and a sector column. The raw
-data and fetch
-scripts already exist (`data/raw/training/*.csv`, `src/data_pipeline/`) —
-what's missing is the feature-engineering step (`build_features.py` in
-CLAUDE.md's plan: moving averages, volatility, momentum, sector tags,
-computed once from the raw CSVs) and a `DataProvider` that reads it into a
-`FeatureTable`. Once that exists, pass an instance of it to `train_baseline()`
-instead of `MockDataProvider`. Nothing in `experts/`, `ga/`, `combiner/`, or
-`selection/` needs to change.
+**Known gap: no sector data yet.** No sector classification has been
+sourced (`config/sector_map.py` doesn't exist per CLAUDE.md's plan), so
+every row gets `sector="Unknown"` — a sector expert (tech/financials/
+real_estate) would train on zero rows. Build `BaselineConfig` with
+`experts=(ExpertSpec("broad", None),)` when using this provider until
+sector data exists — see `scripts/train_broad_real.py`.
 
 ## Exit rule: fixed holding period
 
@@ -158,3 +161,12 @@ sized for a real run, not for quick iteration — a single expert's search
 alone is O(1,000) XGBoost fits. `scripts/run_baseline_demo.py` overrides
 these to something fast; do the same for local iteration and dial back up
 for the real thing.
+
+`GeneticSearch(..., max_workers=N)` parallelizes population evaluation
+across a process pool (each worker single-threaded, so N processes don't
+also each grab every core) — `src.ga.search.default_max_workers()` picks a
+safe default (cores − 2). Measured on a 16-thread machine: ~3.9x speedup
+over sequential, identical results. At real universe scale (~580 tickers,
+~1M rows), one generation of the broad expert alone takes ~13 minutes even
+parallelized — `scripts/train_broad_real.py` is the real, long-running
+entry point; budget hours, not minutes, for a full search.

@@ -82,7 +82,7 @@ gen alg + XGB/
 │   └── processed/               # sp500_membership.csv, portfolio_state.json
 ├── src/
 │   ├── data_pipeline/            # fetch_training.py, fetch_point_in_time_universe.py, tickers.py
-│   ├── data_layer/               # DataProvider interface (§1) — MockDataProvider only so far
+│   ├── data_layer/               # DataProvider interface (§1) — RealDataProvider (broad only, no sector data yet) + MockDataProvider
 │   ├── experts/                  # ExpertModel — XGBoost + confidence (§2)
 │   ├── ga/                       # genetic hyperparameter search (§3)
 │   ├── combiner/                 # OverallModel — blend + rank (§4)

@@ -3,9 +3,20 @@
 Fitness is mean out-of-fold Information Coefficient (rank correlation
 between predicted and realized return) across walk-forward validation
 folds: "train on past, test on unseen future," per the architecture doc.
+
+A population's fitness evaluations are independent of each other, so with
+``max_workers > 1`` they run across a process pool instead of one at a
+time. Workers are single-threaded (each XGBoost fit gets ``n_jobs=1``) —
+N processes each also grabbing every core would oversubscribe the machine
+far worse than running sequentially. The pool is created once per
+``run()`` call and reused across every generation, so the training data is
+sent to each worker exactly once (via the pool initializer), not once per
+candidate.
 """
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -38,6 +49,14 @@ class SearchResult:
     history: list[GenerationRecord]
 
 
+def default_max_workers() -> int:
+    """A safe default worker count: use most of the machine, but leave a
+    couple of cores free so the OS (and whatever else is running) stays
+    responsive rather than the box locking up under a long search."""
+    cpus = os.cpu_count() or 4
+    return max(1, cpus - 2)
+
+
 def _evaluate_fitness(
     genome: XGBConfig,
     frame: pd.DataFrame,
@@ -45,11 +64,12 @@ def _evaluate_fitness(
     target_column: str,
     wf_config: WalkForwardConfig,
     random_seed: int,
+    n_jobs: Optional[int] = None,
 ) -> float:
     fold_scores = []
     for split in generate_walk_forward_splits(frame, wf_config):
         try:
-            model = ExpertModel("candidate", genome, random_seed=random_seed).fit(
+            model = ExpertModel("candidate", genome, random_seed=random_seed, n_jobs=n_jobs).fit(
                 split.train[feature_columns], split.train[target_column]
             )
             preds = model.predict(split.val[feature_columns])
@@ -70,13 +90,58 @@ def _evaluate_fitness(
     return float(np.mean(fold_scores))
 
 
+# -- worker-process globals, set once by _init_worker -------------------
+# Set via the ProcessPoolExecutor initializer rather than captured in a
+# closure, so this works under both "fork" and "spawn" start methods, and
+# so the (potentially large) training frame is pickled to each worker
+# exactly once per run(), not once per candidate evaluated.
+_worker_frame: Optional[pd.DataFrame] = None
+_worker_feature_columns: Optional[list[str]] = None
+_worker_target_column: Optional[str] = None
+_worker_wf_config: Optional[WalkForwardConfig] = None
+_worker_seed: int = 0
+
+
+def _init_worker(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    target_column: str,
+    wf_config: WalkForwardConfig,
+    random_seed: int,
+) -> None:
+    global _worker_frame, _worker_feature_columns, _worker_target_column, _worker_wf_config, _worker_seed
+    _worker_frame = frame
+    _worker_feature_columns = feature_columns
+    _worker_target_column = target_column
+    _worker_wf_config = wf_config
+    _worker_seed = random_seed
+
+
+def _evaluate_genome_in_worker(genome: XGBConfig) -> float:
+    return _evaluate_fitness(
+        genome, _worker_frame, _worker_feature_columns, _worker_target_column,
+        _worker_wf_config, _worker_seed, n_jobs=1,
+    )
+
+
 class GeneticSearch:
     """Evolves XGBoost configs for a single expert's data slice."""
 
-    def __init__(self, ga_config: GAConfig, space: HyperparamSpace, wf_config: WalkForwardConfig):
+    def __init__(
+        self,
+        ga_config: GAConfig,
+        space: HyperparamSpace,
+        wf_config: WalkForwardConfig,
+        max_workers: int = 1,
+    ):
         self.ga_config = ga_config
         self.space = space
         self.wf_config = wf_config
+        #: 1 = sequential (each fit uses XGBoost's own default all-core
+        #: threading — right for small searches / tests). >1 = a process
+        #: pool of single-threaded workers evaluating candidates
+        #: concurrently — right for a real, large population/generation run.
+        self.max_workers = max_workers
 
     def run(
         self,
@@ -85,12 +150,35 @@ class GeneticSearch:
         target_column: str,
         on_generation: Optional[Callable[[GenerationRecord], None]] = None,
     ) -> SearchResult:
+        if self.max_workers > 1:
+            with ProcessPoolExecutor(
+                max_workers=self.max_workers,
+                initializer=_init_worker,
+                initargs=(frame, feature_columns, target_column, self.wf_config, self.ga_config.random_seed),
+            ) as executor:
+                return self._run_with_scorer(
+                    lambda genomes: list(executor.map(_evaluate_genome_in_worker, genomes)),
+                    on_generation,
+                )
+        return self._run_with_scorer(
+            lambda genomes: [
+                _evaluate_fitness(g, frame, feature_columns, target_column, self.wf_config, self.ga_config.random_seed)
+                for g in genomes
+            ],
+            on_generation,
+        )
+
+    def _run_with_scorer(
+        self,
+        score_genomes: Callable[[list[XGBConfig]], list[float]],
+        on_generation: Optional[Callable[[GenerationRecord], None]],
+    ) -> SearchResult:
         rng = np.random.default_rng(self.ga_config.random_seed)
         population = Population.random(self.space, self.ga_config, rng)
         history: list[GenerationRecord] = []
 
         for gen in range(self.ga_config.n_generations):
-            self._score_unevaluated(population, frame, feature_columns, target_column)
+            self._score_unevaluated(population, score_genomes)
 
             best = population.best()
             record = GenerationRecord(
@@ -110,16 +198,11 @@ class GeneticSearch:
         best = population.best()
         return SearchResult(best_genome=best.genome, best_fitness=best.fitness, history=history)
 
-    def _score_unevaluated(
-        self,
-        population: Population,
-        frame: pd.DataFrame,
-        feature_columns: list[str],
-        target_column: str,
-    ) -> None:
-        for individual in population.individuals:
-            if individual.fitness is None:  # elites carry their fitness over
-                individual.fitness = _evaluate_fitness(
-                    individual.genome, frame, feature_columns, target_column,
-                    self.wf_config, self.ga_config.random_seed,
-                )
+    @staticmethod
+    def _score_unevaluated(population: Population, score_genomes: Callable[[list[XGBConfig]], list[float]]) -> None:
+        unevaluated = [ind for ind in population.individuals if ind.fitness is None]  # elites carry fitness over
+        if not unevaluated:
+            return
+        fitnesses = score_genomes([ind.genome for ind in unevaluated])
+        for individual, fitness in zip(unevaluated, fitnesses, strict=True):
+            individual.fitness = fitness
