@@ -59,6 +59,11 @@ class RealDataProvider(DataProvider):
         self.data_dir = Path(data_dir)
         self.membership_csv = Path(membership_csv)
         self._membership = self._load_membership()
+        #: Sorted observation dates — the dates the membership file actually
+        #: records. Used to resolve an arbitrary date to the roster in force.
+        self._observation_dates = np.sort(self._membership["date"].unique())
+        #: Exact (date, ticker) membership pairs, for O(1) lookup.
+        self._member_index = pd.MultiIndex.from_frame(self._membership[["date", "ticker"]])
         #: Populated by the most recent get_feature_table() call — tickers
         #: whose price file was missing (delisted, acquired, no successor;
         #: see wharton-InC README "Gotchas" — ~8% of the universe by design).
@@ -66,7 +71,11 @@ class RealDataProvider(DataProvider):
 
     def _load_membership(self) -> pd.DataFrame:
         df = pd.read_csv(self.membership_csv, parse_dates=["date"])
-        return df[["date", "ticker"]].sort_values("date").reset_index(drop=True)
+        # `ticker` is the current symbol and matches the price filenames;
+        # `ticker_asof` (the symbol in use at the time) is the historical
+        # record and deliberately not used as a join key here.
+        df = df[["date", "ticker"]].drop_duplicates()
+        return df.sort_values(["date", "ticker"]).reset_index(drop=True)
 
     def get_feature_table(self, start: str, end: str, hold_days: int) -> FeatureTable:
         start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
@@ -145,19 +154,44 @@ class RealDataProvider(DataProvider):
         return df
 
     def _filter_point_in_time(self, frame: pd.DataFrame) -> pd.DataFrame:
-        """Keep only rows where the ticker was actually an S&P 500 member as
-        of that date — a backward as-of join against sp500_membership.csv,
-        per the wharton-InC README ("a row means: this was the roster as of
-        this date... needs a backward as-of join, not an exact-date match").
+        """Keep only rows where the ticker was an S&P 500 member on that date.
+
+        sp500_membership.csv records a row only when membership *changes*, so
+        a row means "this was the roster as of this date, and stayed so until
+        the next row." Resolving an arbitrary date therefore takes two steps,
+        and the order matters:
+
+          1. Resolve the date to the latest observation at or before it. This
+             is the as-of part, and it runs on the DATE AXIS ALONE.
+          2. Require an exact (observation_date, ticker) membership row.
+
+        Doing the as-of join per ticker instead — ``merge_asof(...,
+        by="ticker", direction="backward")`` — is subtly wrong, and was the
+        original bug here. When a company leaves the index it simply stops
+        having rows, so a per-ticker backward join keeps matching its FINAL
+        row forever and reports it as a member for the rest of history. Such
+        a join can only fail *before* a ticker's first row, never *after* its
+        last: it strips pre-entry rows but no post-exit ones. Measured on the
+        real data, that leaked thousands of rows per departed company (AMG
+        left the index in 2019 and kept 1,517 rows through 2025).
+
+        Resolving the date globally first and then demanding an exact pair
+        closes the hole: once a company is dropped, the observation in force
+        no longer lists it, so the pair lookup fails as it should.
         """
-        idx = frame.index.to_frame(index=False).rename(columns={"timestamp": "date"})
-        idx["_pos"] = np.arange(len(idx))
+        idx = frame.index.to_frame(index=False)
+        dates = idx["timestamp"].to_numpy(dtype="datetime64[ns]")
 
-        merged = pd.merge_asof(
-            idx.sort_values("date"),
-            self._membership.assign(is_member=True).sort_values("date"),
-            on="date", by="ticker", direction="backward",
-        ).sort_values("_pos")
+        # Latest observation at or before each row's date. pos == -1 means the
+        # row predates every observation, so membership is simply unknown —
+        # treated as "not a member" rather than guessed at.
+        pos = np.searchsorted(self._observation_dates, dates, side="right") - 1
+        resolved = np.full(len(dates), np.datetime64("NaT"), dtype="datetime64[ns]")
+        known = pos >= 0
+        resolved[known] = self._observation_dates[pos[known]]
 
-        mask = merged["is_member"].fillna(False).to_numpy()
-        return frame[mask]
+        probe = pd.MultiIndex.from_arrays(
+            [resolved, idx["ticker"].to_numpy()], names=["date", "ticker"]
+        )
+        # NaT never matches, so unknown-membership rows drop out here too.
+        return frame[probe.isin(self._member_index)]
