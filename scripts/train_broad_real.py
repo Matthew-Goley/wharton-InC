@@ -51,9 +51,14 @@ def main() -> None:
          "population": config.ga.population_size, "generations": config.ga.n_generations})
 
     def on_generation(record) -> None:
+        # Log the champion's actual genome every generation, not just its
+        # fitness -- stopping the run early (a real plateau, a crash, just
+        # wanting results sooner) should never mean losing the only usable
+        # artifact of however many generations already ran.
         log({
             "event": "generation", "generation": record.generation,
             "best_fitness": record.best_fitness, "mean_fitness": record.mean_fitness,
+            "best_genome": record.best_genome.as_xgb_params(),
             "elapsed_s": round(time.perf_counter() - t0, 1),
         })
 
