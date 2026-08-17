@@ -30,8 +30,8 @@ def test_agreeing_sector_and_broad_are_confidence_weighted_plus_bonus():
 
     aaa = combined.loc[("AAA", T0)]
     expected_weighted = (0.02 * 0.8 + 0.04 * 0.4) / (0.8 + 0.4)
-    expected_bonus = 0.1 * min(0.8, 0.4)
-    assert aaa["combined_score"] == pytest.approx(expected_weighted + expected_bonus)
+    expected_multiplier = 1.0 + 0.1 * min(0.8, 0.4)
+    assert aaa["combined_score"] == pytest.approx(expected_weighted * expected_multiplier)
     assert aaa["n_experts"] == 2
 
     bbb = combined.loc[("BBB", T0)]
@@ -41,8 +41,10 @@ def test_agreeing_sector_and_broad_are_confidence_weighted_plus_bonus():
 
 def test_bearish_agreement_pushes_more_negative_not_toward_positive():
     """Agreement should reinforce whichever direction both experts share —
-    including a shared bearish view. An unsigned bonus would nudge a
-    bearish-agreement ticker toward positive, risking a false buy signal."""
+    including a shared bearish view. A multiplier >1 on a negative
+    weighted-average makes it more negative; an unsigned/additive bonus
+    could instead nudge a bearish-agreement ticker toward positive, risking
+    a false buy signal."""
     model = OverallModel((BROAD, TECH), agreement_bonus=0.1)
     predictions = {
         "broad": _preds({("AAA", T0): (-0.02, 0.8)}),
@@ -50,8 +52,8 @@ def test_bearish_agreement_pushes_more_negative_not_toward_positive():
     }
     combined = model.combine(predictions)
     expected_weighted = (-0.02 * 0.8 + -0.04 * 0.4) / (0.8 + 0.4)
-    expected_bonus = -0.1 * min(0.8, 0.4)  # negative: reinforces the bearish agreement
-    assert combined.loc[("AAA", T0), "combined_score"] == pytest.approx(expected_weighted + expected_bonus)
+    expected_multiplier = 1.0 + 0.1 * min(0.8, 0.4)  # >1: reinforces the bearish agreement, in proportion
+    assert combined.loc[("AAA", T0), "combined_score"] == pytest.approx(expected_weighted * expected_multiplier)
     assert combined.loc[("AAA", T0), "combined_score"] < expected_weighted
 
 
@@ -96,6 +98,31 @@ def test_rank_orders_within_timestamp_independently():
 def test_rejects_missing_or_duplicate_broad_expert():
     with pytest.raises(ValueError):
         OverallModel((TECH,))  # no broad expert at all
+
+
+def test_agreement_bonus_stays_proportional_to_prediction_size():
+    """Regression for a real bug: an *additive* bonus in raw-return units
+    dominated small real predictions (agreement_bonus * confidence ~3-5% vs.
+    typical 5-day predictions well under 2%), so agreement alone -- not
+    predicted magnitude -- decided rank-1 on the first real has_sector=True
+    run, and combined_score (which TradeSelector's cost-clearing filter
+    reads as real % units) was inflated on bonus points rather than edge.
+    The multiplicative fix must keep the bonus's *ratio* to the prediction
+    constant regardless of the prediction's absolute size."""
+    model = OverallModel((BROAD, TECH), agreement_bonus=0.1)
+    small = model.combine({
+        "broad": _preds({("AAA", T0): (0.002, 0.5)}),
+        "tech": _preds({("AAA", T0): (0.002, 0.5)}),
+    }).loc[("AAA", T0), "combined_score"]
+    large = model.combine({
+        "broad": _preds({("AAA", T0): (0.20, 0.5)}),
+        "tech": _preds({("AAA", T0): (0.20, 0.5)}),
+    }).loc[("AAA", T0), "combined_score"]
+    # Same confidences, same relative agreement -- the bonus-inflated score
+    # should scale with the prediction, not add a fixed absolute amount.
+    assert small == pytest.approx(0.002 * 1.05)
+    assert large == pytest.approx(0.20 * 1.05)
+    assert large / small == pytest.approx(0.20 / 0.002)
 
 
 def test_vol_adjusted_ranking_demotes_high_vol_large_prediction():

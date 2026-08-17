@@ -25,6 +25,20 @@ class OverallModel:
     """
 
     def __init__(self, experts: tuple[ExpertSpec, ...], agreement_bonus: float = 0.1):
+        """``agreement_bonus``: strength of the reinforcement applied when
+        broad and sector agree on direction (0 disables it entirely — an
+        intentional ablation axis, not just a tuning knob. First real
+        has_sector=True run (the Information Technology checkpoint) found
+        the bonus amplifying agreeing-but-wrong picks into rank-1 winners
+        (CRWD, twice, both realized losses) precisely because agreement and
+        accuracy aren't the same thing — two experts can share a blind spot
+        on a chaotic name as easily as they can confirm a real signal. That
+        makes this bonus (amplify agreement) potentially in tension with
+        ``rank(ranking_score="uncertainty_adjusted")`` (demote disagreement)
+        once it exists — both read the same broad/sector gap, in opposite
+        directions. Step 5 of the sector-expert plan is expected to run the
+        ablation both ways (bonus on vs off) under uncertainty_adjusted
+        ranking to find out whether they're complementary or redundant."""
         broad_specs = [spec for spec in experts if spec.sector is None]
         if len(broad_specs) != 1 or broad_specs[0].name != BROAD_EXPERT:
             raise ValueError(f"Expected exactly one broad expert named '{BROAD_EXPERT}'")
@@ -80,17 +94,26 @@ class OverallModel:
         agree = has_sector & (np.sign(merged["broad_return"]) == np.sign(sector_return)) & (
             np.sign(merged["broad_return"]) != 0
         )
-        # Signed: agreement reinforces whichever direction both experts point
-        # (more positive when both are bullish, more negative when both are
-        # bearish). An unsigned bonus would nudge a bearish-agreement ticker
-        # *toward* positive, which could flip it into a false buy signal.
-        bonus = np.where(
-            agree,
-            self.agreement_bonus * np.minimum(merged["broad_confidence"], sector_confidence) * np.sign(merged["broad_return"]),
-            0.0,
+        # Multiplicative, not additive: reinforces whichever direction both
+        # experts point (scales the magnitude up, so more positive when both
+        # are bullish, more negative when both are bearish) *without*
+        # changing combined_score's units. An additive bonus in raw-return
+        # units was found to dominate real predictions (5-day returns are
+        # typically well under 2%, but agreement_bonus * confidence commonly
+        # computed to 3-5% -- median 76% of combined_score on the first
+        # real has_sector=True run), which is a correctness bug, not just a
+        # ranking quirk: combined_score has to stay in real % units for
+        # TradeSelector's cost-clearing filter (a fixed threshold in return
+        # units), so an inflated score was clearing trades on bonus points
+        # rather than predicted edge. Multiplying keeps the bonus
+        # proportional to the prediction it's reinforcing -- a 20bp
+        # agreeing prediction gets a 20bp-ish nudge, not an absolute
+        # 3-5% one.
+        multiplier = np.where(
+            agree, 1.0 + self.agreement_bonus * np.minimum(merged["broad_confidence"], sector_confidence), 1.0
         )
 
-        merged["combined_score"] = weighted_return + bonus
+        merged["combined_score"] = weighted_return * multiplier
         merged["n_experts"] = np.where(has_sector, 2, 1)
         return merged[_JOIN_COLUMNS + ["combined_score", "n_experts"]]
 

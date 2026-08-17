@@ -39,46 +39,46 @@
   "trades_executed": 1988,
   "entries": 994,
   "exits": 994,
-  "entries_with_sector_expert": 753,
-  "win_rate": 0.5362173038229376,
-  "mean_return_per_trade_raw": 0.002470145753826328,
-  "median_return_per_trade_raw": 0.003413444795053233,
-  "mean_excess_return_per_trade_vs_market": 0.0005363164693667759,
+  "entries_with_sector_expert": 493,
+  "win_rate": 0.5422535211267606,
+  "mean_return_per_trade_raw": 0.004347326842907538,
+  "median_return_per_trade_raw": 0.004390069924305795,
+  "mean_excess_return_per_trade_vs_market": 0.0013487442385553697,
   "return_by_rank_bucket": [
     {
       "rank_range": "(0, 1]",
-      "n": 24,
-      "mean_return": -0.006369621605607528,
-      "median_return": 0.00757863349280552,
-      "win_rate": 0.5416666666666666
+      "n": 45,
+      "mean_return": -0.036233205833048995,
+      "median_return": -0.033839720360903436,
+      "win_rate": 0.35555555555555557
     },
     {
       "rank_range": "(1, 3]",
-      "n": 65,
-      "mean_return": 0.005859000067460387,
-      "median_return": 0.00246246006517703,
-      "win_rate": 0.5846153846153846
+      "n": 119,
+      "mean_return": -0.009134293483993203,
+      "median_return": -0.010371487406648838,
+      "win_rate": 0.453781512605042
     },
     {
       "rank_range": "(3, 5]",
-      "n": 90,
-      "mean_return": 0.0052876551746064366,
-      "median_return": 0.00674598483180644,
-      "win_rate": 0.6
+      "n": 140,
+      "mean_return": 0.011629201581359824,
+      "median_return": 0.009497478443543872,
+      "win_rate": 0.5928571428571429
     },
     {
       "rank_range": "(5, 10]",
-      "n": 213,
-      "mean_return": 0.005854888013184703,
-      "median_return": 0.0029759733368288632,
-      "win_rate": 0.5211267605633803
+      "n": 335,
+      "mean_return": 0.0028148616175308057,
+      "median_return": 0.002425619845864535,
+      "win_rate": 0.5313432835820896
     },
     {
       "rank_range": "(10, 10000]",
-      "n": 602,
-      "mean_return": 0.0008378416626745935,
-      "median_return": 0.0030645528478608908,
-      "win_rate": 0.526578073089701
+      "n": 355,
+      "mean_return": 0.01258493297371632,
+      "median_return": 0.008599999669643754,
+      "win_rate": 0.5859154929577465
     }
   ],
   "split_sample_validation": {
@@ -86,38 +86,38 @@
       "2024": [
         {
           "rank_range": "(0, 1]",
-          "n": 24,
-          "mean_return": -0.006369621605607528,
-          "median_return": 0.00757863349280552,
-          "win_rate": 0.5416666666666666
+          "n": 45,
+          "mean_return": -0.036233205833048995,
+          "median_return": -0.033839720360903436,
+          "win_rate": 0.35555555555555557
         },
         {
           "rank_range": "(1, 3]",
-          "n": 65,
-          "mean_return": 0.005859000067460387,
-          "median_return": 0.00246246006517703,
-          "win_rate": 0.5846153846153846
+          "n": 119,
+          "mean_return": -0.009134293483993203,
+          "median_return": -0.010371487406648838,
+          "win_rate": 0.453781512605042
         },
         {
           "rank_range": "(3, 5]",
-          "n": 90,
-          "mean_return": 0.0052876551746064366,
-          "median_return": 0.00674598483180644,
-          "win_rate": 0.6
+          "n": 140,
+          "mean_return": 0.011629201581359824,
+          "median_return": 0.009497478443543872,
+          "win_rate": 0.5928571428571429
         },
         {
           "rank_range": "(5, 10]",
-          "n": 213,
-          "mean_return": 0.005854888013184703,
-          "median_return": 0.0029759733368288632,
-          "win_rate": 0.5211267605633803
+          "n": 335,
+          "mean_return": 0.0028148616175308057,
+          "median_return": 0.002425619845864535,
+          "win_rate": 0.5313432835820896
         },
         {
           "rank_range": "(10, 10000]",
-          "n": 602,
-          "mean_return": 0.0008378416626745935,
-          "median_return": 0.0030645528478608908,
-          "win_rate": 0.526578073089701
+          "n": 355,
+          "mean_return": 0.01258493297371632,
+          "median_return": 0.008599999669643754,
+          "win_rate": 0.5859154929577465
         }
       ],
       "2025": [
