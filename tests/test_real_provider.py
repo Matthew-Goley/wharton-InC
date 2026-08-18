@@ -418,6 +418,45 @@ def test_momentum_10_skip_2_is_not_yet_a_promoted_feature(fixture_dirs):
     assert frame["momentum_10_skip_2"].notna().any()
 
 
+# --- has_earnings_data (candidate leakage-gate feature, open question 22) --
+
+def test_has_earnings_data_is_not_yet_a_promoted_feature(fixture_dirs):
+    assert "has_earnings_data" not in FEATURE_COLUMNS
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        earnings_tickers=frozenset({"ALWAYS"}),
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert "has_earnings_data" in frame.columns
+
+
+def test_has_earnings_data_is_1_for_covered_tickers_0_for_others(fixture_dirs):
+    """The whole point is a clean, constant-per-ticker indicator -- exactly
+    1.0 for a ticker with real earnings data on file, exactly 0.0 (never
+    NaN -- this must never itself be missing) for one without."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        earnings_tickers=frozenset({"ALWAYS"}),  # only ALWAYS "has" earnings data
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    always_vals = frame.xs("ALWAYS", level="ticker")["has_earnings_data"]
+    leaver_vals = frame.xs("LEAVER", level="ticker")["has_earnings_data"]
+    assert (always_vals == 1.0).all()
+    assert (leaver_vals == 0.0).all()
+    assert not always_vals.isna().any() and not leaver_vals.isna().any()
+
+
+def test_has_earnings_data_defaults_to_empty_when_fetch_has_not_run(tmp_path, monkeypatch):
+    """Before src.data_pipeline.fetch_earnings_dates has ever run, the real
+    cache file doesn't exist -- must default to "nobody has earnings data"
+    (0.0 for everyone), not crash."""
+    import src.data_layer.real_provider as rp
+    monkeypatch.setattr(rp, "EARNINGS_DATES_CACHE", tmp_path / "does_not_exist.csv")
+    assert rp._load_earnings_tickers() == frozenset()
+
+
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
 
 def _quiet_returns(n=400, scale=0.01, seed=0):

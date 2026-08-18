@@ -65,6 +65,18 @@ from src.data_layer.interface import DataProvider, FeatureTable
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAINING_DIR = REPO_ROOT / "data" / "raw" / "training"
 MEMBERSHIP_CSV = REPO_ROOT / "data" / "processed" / "sp500_membership.csv"
+EARNINGS_DATES_CACHE = REPO_ROOT / "data" / "raw" / "reference" / "earnings_dates_raw.csv"
+
+
+def _load_earnings_tickers() -> frozenset[str]:
+    """Tickers with at least one real (non-null) earnings_date in the
+    cached fetch (src.data_pipeline.fetch_earnings_dates). Empty if that
+    fetch hasn't run yet -- has_earnings_data is then just 0 for every
+    ticker, not an error; nothing here depends on the fetch having run."""
+    if not EARNINGS_DATES_CACHE.exists():
+        return frozenset()
+    df = pd.read_csv(EARNINGS_DATES_CACHE, parse_dates=["earnings_date"])
+    return frozenset(df.dropna(subset=["earnings_date"])["ticker"].unique())
 
 #: One or two representatives per documented cross-sectional effect. The set
 #: is fixed by *concept*, chosen from the literature before scoring anything —
@@ -200,6 +212,7 @@ class RealDataProvider(DataProvider):
         demean_target: bool = True,
         normalize_features: bool = False,
         sector_map: Optional[dict[str, str]] = None,
+        earnings_tickers: Optional[frozenset[str]] = None,
     ):
         #: ticker -> sector, defaulting to the real generated map. Injectable
         #: (matching universe/data_dir/membership_csv's existing pattern) so
@@ -210,6 +223,11 @@ class RealDataProvider(DataProvider):
             from config.sector_map import SECTOR_MAP  # local import: avoid a hard dependency at module load
             sector_map = SECTOR_MAP
         self.sector_map = sector_map
+        #: Tickers with real earnings-date data (src.data_pipeline.
+        #: fetch_earnings_dates), defaulting to the real cache. Injectable
+        #: for the same reason sector_map is -- see has_earnings_data's own
+        #: note below for what this feeds and why it's tested alone first.
+        self.earnings_tickers = _load_earnings_tickers() if earnings_tickers is None else earnings_tickers
         #: When True (the default) the label is excess return over that date's
         #: universe mean. See _demean_target for what that changes downstream.
         self.demean_target = demean_target
@@ -396,6 +414,23 @@ class RealDataProvider(DataProvider):
                 "realized_skew_5": returns.rolling(5, min_periods=5).skew(),
                 "realized_kurt_5": returns.rolling(5, min_periods=5).kurt(),
                 "ret_vol_corr_5": returns.rolling(5, min_periods=5).corr(volume.pct_change()),
+                # CANDIDATE feature (not in FEATURE_COLUMNS) -- a
+                # missingness INDICATOR, deliberately tested alone before
+                # any real earnings-derived feature (baseline_system_
+                # architecture.md open question 22): delisted/acquired
+                # tickers have zero earnings data (checked: CELG, RHT,
+                # TWTR, XLNX all return nothing) and are systematically
+                # volatile, event-driven names. XGBoost routes NaN to a
+                # learned default branch, so a later earnings feature that's
+                # NaN for exactly this same set could let the model learn
+                # "missing -> behaves differently" -- survivorship
+                # correlation, not earnings economics. This constant
+                # (1.0 if the ticker has any real earnings_date on file,
+                # else 0.0) isolates and tests that missingness pattern by
+                # itself, with no real earnings content attached, so any
+                # later "earnings surprise moved IC" result can be told
+                # apart from "missingness alone moved IC."
+                "has_earnings_data": 1.0 if ticker in self.earnings_tickers else 0.0,
                 TARGET_COLUMN: fwd_return,
                 "sector": self.sector_map.get(ticker, UNKNOWN_SECTOR),
             }
