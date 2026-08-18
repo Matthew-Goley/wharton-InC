@@ -198,6 +198,47 @@ def test_real_position_without_scheduled_exit_is_force_closed_and_logged():
     assert any(entry["ticker"] == "AAA" for entry in selector.force_close_log)
 
 
+def test_max_ticker_share_pct_stops_repeated_entries_once_capped():
+    # hold_days=1 + the same-day re-entry ban means AAA's fastest possible
+    # cadence is every other period (enter, exit, blocked same day, re-enter)
+    # -- 3 entries in 6 periods uncapped (see the sibling test below). trade_
+    # budget=20 -> total-entries denominator = 20//2 = 10. max_ticker_share_
+    # pct=0.2 -> max(1, floor(0.2*10)) = 2, below that natural 3.
+    selector = TradeSelector(_config(
+        trade_budget=20, hold_days=1, top_n_per_period=5, max_ticker_share_pct=0.2,
+    ))
+    rows = {}
+    for i in range(6):
+        rows[("AAA", PERIODS[i])] = (EDGE, 1)  # always ranks 1 -- would otherwise recur every cycle
+        rows[("BBB", PERIODS[i])] = (EDGE / 2, 2)
+    trades = selector.run(_ranked(rows))
+    entries = _entries(trades)
+    aaa_entries = entries[entries.index.get_level_values("ticker") == "AAA"]
+    assert len(aaa_entries) == 2  # capped below its natural 3-entry cadence
+    assert len(entries[entries.index.get_level_values("ticker") == "BBB"]) > 0  # BBB fills in once AAA is capped
+
+
+def test_max_ticker_share_pct_none_is_uncapped_by_default():
+    selector = TradeSelector(_config(trade_budget=20, hold_days=1, top_n_per_period=5))
+    rows = {("AAA", PERIODS[i]): (EDGE, 1) for i in range(6)}
+    trades = selector.run(_ranked(rows))
+    # No default limit: AAA re-enters on its natural cadence (every other
+    # period, given hold_days=1 and the same-day re-entry ban), not held
+    # below it by any cap.
+    assert len(_entries(trades)) == 3
+
+
+def test_max_ticker_share_pct_floors_to_at_least_one_entry():
+    # A share so small it would floor to 0 must still allow 1 entry per ticker,
+    # not lock every ticker out after its very first pick.
+    selector = TradeSelector(_config(
+        trade_budget=200, hold_days=1, top_n_per_period=5, max_ticker_share_pct=0.001,
+    ))
+    rows = {("AAA", PERIODS[i]): (EDGE, 1) for i in range(3)}
+    trades = selector.run(_ranked(rows))
+    assert len(_entries(trades)) == 1  # capped at 1, not 0
+
+
 def test_real_position_with_scheduled_exit_date_exits_naturally():
     portfolio = PortfolioState(
         as_of="2019-12-01",

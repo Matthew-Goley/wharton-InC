@@ -138,6 +138,24 @@ class TradingConfig:
     position_cap_pct: Optional[float] = cost_model.POSITION_CAP_PCT  # per-stock % of portfolio; TBD
     max_trades_per_stock_per_day: int = 2  # real rule, expected non-binding (see doc)
 
+    #: Max share of the window's total ENTRIES (not entries+exits) any one
+    #: ticker may take, as a fraction of ``trade_budget // 2`` (a stable,
+    #: known-in-advance denominator — the true final entry count isn't known
+    #: until the run finishes, since it depends on eligibility and open
+    #: positions at window close). None disables the cap entirely (default,
+    #: backward-compatible). Not a competition rule — a portfolio-
+    #: construction control added after a real finding: the single most
+    #: extreme-scoring ticker's share of the rank-1 bucket was 60-81% across
+    #: every scoring architecture tried (broad-only, vol-adjusted, IT-only,
+    #: full sector coverage) — the concentration was invariant to the
+    #: architecture change, meaning it's a property of unconstrained argmax
+    #: selection, not any one ticker or fixable by a better ensemble (see
+    #: baseline_system_architecture.md open questions 9). Ticker-agnostic by
+    #: design — no hardcoded exclusion list, since the offending ticker is
+    #: expected to differ by test period (no real book puts most of its top
+    #: conviction in one name regardless of who that name is).
+    max_ticker_share_pct: Optional[float] = None
+
     # Fixed-holding-period exit rule (exit_rule_spec.md). hold_days (N) also
     # defines the expert training label (N-day forward return) — the two
     # must always agree, so this comes from config/hold_period.py, the same

@@ -1,0 +1,75 @@
+{
+  "ticker_cap": 0.01,
+  "raw_daily_argmax_winner_para_share": 0.49295774647887325,
+  "raw_daily_argmax_distinct_tickers": 46,
+  "period_champion_uncapped": {
+    "n": 101,
+    "unique_tickers": 49,
+    "mean_return": -0.008008124982342987,
+    "median_return": -0.005656622717506554,
+    "win_rate": 0.4752475247524752,
+    "top_tickers": {
+      "PARA": 15,
+      "MRNA": 5,
+      "WBD": 5,
+      "AES": 5,
+      "ILMN": 5,
+      "PODD": 4,
+      "CHTR": 4,
+      "ENPH": 3,
+      "NWS": 3,
+      "GOOG": 2
+    }
+  },
+  "period_champion_capped": {
+    "n": 103,
+    "unique_tickers": 61,
+    "mean_return": 0.002500343776595325,
+    "median_return": 0.0030878264409521794,
+    "win_rate": 0.5145631067961165,
+    "top_tickers": {
+      "PARA": 8,
+      "WBD": 5,
+      "MRNA": 4,
+      "PODD": 4,
+      "CHTR": 4,
+      "ILMN": 4,
+      "ENPH": 3,
+      "AES": 3,
+      "NWS": 3,
+      "GOOG": 2
+    }
+  },
+  "decomposition_uncapped_vs_capped": {
+    "n_blocks_total": 100,
+    "common": {
+      "n": 86,
+      "mean_return": 0.001482892120404062,
+      "median_return": 0.00016856173222334903,
+      "win_rate": 0.5
+    },
+    "only_a": {
+      "n": 15,
+      "mean_return": -0.062423289704759403,
+      "median_return": -0.06931514360299573,
+      "win_rate": 0.3333333333333333,
+      "distinct_blocks": 9,
+      "trades_per_active_block": 1.6666666666666667
+    },
+    "only_b": {
+      "n": 17,
+      "mean_return": 0.007647452154974656,
+      "median_return": 0.00568563900540453,
+      "win_rate": 0.5882352941176471,
+      "distinct_blocks": 10,
+      "trades_per_active_block": 1.7
+    },
+    "significance_only_a_vs_only_b": {
+      "mean_diff_b_minus_a": 0.07007074185973405,
+      "block_effective_se": 0.049697830290603574,
+      "block_effective_t": 1.4099356340106142
+    },
+    "label_a": "uncapped_champion",
+    "label_b": "capped_champion"
+  }
+}

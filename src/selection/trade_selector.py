@@ -72,6 +72,18 @@ class TradeSelector:
         self.force_close_log: list[dict] = []
         self._log: list[dict] = []
 
+        # Per-ticker entry frequency cap (see TradingConfig.max_ticker_share_pct).
+        # `trade_budget // 2` is the total-entries denominator: a stable
+        # upper bound known before the run starts (the true final entry
+        # count depends on eligibility as the run unfolds, so it can't be
+        # the denominator the cap is computed from).
+        self._entry_counts: dict[str, int] = {}
+        self._max_entries_per_ticker: Optional[int] = (
+            max(1, math.floor(config.max_ticker_share_pct * (config.trade_budget // 2)))
+            if config.max_ticker_share_pct is not None
+            else None
+        )
+
     @property
     def trades_taken(self) -> int:
         """E — entries and exits both count against the budget (spec §3)."""
@@ -104,6 +116,10 @@ class TradeSelector:
         if eligible.empty:
             return eligible
         blocked = self._open.keys() | self._just_exited
+        if self._max_entries_per_ticker is not None:
+            blocked = blocked | {
+                t for t, n in self._entry_counts.items() if n >= self._max_entries_per_ticker
+            }
         excluded = eligible.index.get_level_values("ticker").isin(blocked)
         return eligible[~excluded]
 
@@ -168,6 +184,7 @@ class TradeSelector:
             )
             self._open[ticker] = position
             self._executed += 1
+            self._entry_counts[ticker] = self._entry_counts.get(ticker, 0) + 1
             rows.append(
                 self._event(
                     ticker, ts, "entry", period_number, position,
