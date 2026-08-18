@@ -36,8 +36,8 @@ class ExpertSpec:
 #:
 #: Sector strings must match ``config.sector_map.SECTOR_MAP``'s GICS-
 #: normalized values exactly (a mismatch silently trains on zero rows rather
-#: than erroring, since ``ExpertData.slice_for`` is a plain filter). All
-#: eleven of the map's sectors are wired up here (validated end to end on
+#: than erroring, since ``ExpertData.slice_for`` is a plain filter). 10 of
+#: the map's 11 sectors are wired up here (validated end to end on
 #: Information Technology alone first — see scripts/train_sector_expert_real.py
 #: and its checkpoint result, data/processed/backtest_sector_it_real.json —
 #: including a real bug found and fixed there: OverallModel's agreement
@@ -45,6 +45,18 @@ class ExpertSpec:
 #: now multiplicative). The ~70 universe tickers with no resolved sector
 #: (config/sector_map.py) stay broad-only, same as before this roster
 #: existed — nothing downstream needs to special-case them.
+#:
+#: Materials is EXCLUDED, decided independently of the step-5 ranking_score/
+#: agreement_bonus ablation rather than as a third axis in it: its own
+#: out-of-sample IC is sign-stable negative across both split-sample halves
+#: (2024 t=-3.75, 2025 t=-1.37 — real, though the full-window t=-3.52 is
+#: mostly a 2024 result), which is decisive by the pre-registered rule
+#: (exclude if the sign holds in both halves). Cutting it as an ablation
+#: axis instead of testing "materials in/out" alongside everything else
+#: takes step 5 from 12 arms to 6 (3 ranking_score x 2 agreement_bonus),
+#: materially improving power on the question that axis was actually
+#: built to test — see baseline_system_architecture.md open question 9's
+#: sign-stability entry and the step-5 power-analysis note.
 EXPERTS: tuple[ExpertSpec, ...] = (
     ExpertSpec(name=BROAD_EXPERT, sector=None),
     ExpertSpec(name="tech", sector="Information Technology"),
@@ -57,7 +69,6 @@ EXPERTS: tuple[ExpertSpec, ...] = (
     ExpertSpec(name="utilities", sector="Utilities"),
     ExpertSpec(name="energy", sector="Energy"),
     ExpertSpec(name="communication_services", sector="Communication Services"),
-    ExpertSpec(name="materials", sector="Materials"),
 )
 
 
