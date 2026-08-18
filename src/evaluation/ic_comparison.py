@@ -34,6 +34,11 @@ from scipy.stats import norm
 
 from src.evaluation.metrics import MIN_NAMES_PER_DATE, per_date_cross_sectional_ic
 
+#: Default bar for "IC moved" under this project's feature-work protocol
+#: (baseline_system_architecture.md open question 12): keep only on an
+#: improvement past this many SE, not just any significant movement.
+DEFAULT_KEEP_SE_MULTIPLE = 2.0
+
 
 def paired_ic_comparison(
     dates: np.ndarray,
@@ -88,3 +93,32 @@ def paired_ic_comparison(
         "ci_low": mean_diff - z * se,
         "ci_high": mean_diff + z * se,
     }
+
+
+def keep_or_discard(result: dict, min_se_multiple: float = DEFAULT_KEEP_SE_MULTIPLE) -> str:
+    """Interpret a :func:`paired_ic_comparison` result under this project's
+    feature-work protocol: KEEP only on a real improvement past
+    ``min_se_multiple`` SE, DISCARD on a real move in the wrong direction
+    or on no detectable effect.
+
+    Regression-tested against the exact bug this fixes: an earlier,
+    inline version of this decision (in the first feature-work diagnostic
+    script) returned "KEEP" for any ``|diff| > threshold``, without
+    checking sign — so a real, decisive DEGRADATION (the sector-momentum
+    candidate, paired t=-2.69) printed "KEEP" instead of "DISCARD". This
+    is the fourth diagnostic-tooling bug this project has caught (after
+    the vol_normalized_rank_check NaN crash, the split-sample year-
+    boundary leak, and the Step 5 Bonferroni threshold needing to be
+    recomputed rather than assumed) — worth a deliberate failing-case
+    test before trusting any new diagnostic's output, not just this one.
+    """
+    if result["n_dates"] == 0 or result["mean_diff"] is None:
+        return "DISCARD (no comparable dates)"
+    diff, se = result["mean_diff"], result["se"]
+    threshold = min_se_multiple * se
+    if diff > threshold:
+        return "KEEP"
+    elif diff < -threshold:
+        return "DISCARD (moved the wrong direction)"
+    else:
+        return "DISCARD (no detectable effect)"

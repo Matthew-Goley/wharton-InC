@@ -318,6 +318,10 @@ class RealDataProvider(DataProvider):
         volume = raw["Volume"]
         returns = close.pct_change()
         ma_20 = close.rolling(20, min_periods=1).mean()
+        #: CANDIDATE feature ingredient (not in FEATURE_COLUMNS) -- see
+        #: px_to_ma_10's own note below FEATURE_COLUMNS for the horizon-
+        #: match reasoning.
+        ma_10 = close.rolling(10, min_periods=1).mean()
 
         # Semivariance split — downside and upside volatility are priced
         # differently (Bollerslev et al., "good" vs "bad" volatility).
@@ -336,6 +340,13 @@ class RealDataProvider(DataProvider):
         df = pd.DataFrame(
             {
                 "px_to_ma_20": close / ma_20 - 1.0,
+                # CANDIDATE feature (not in FEATURE_COLUMNS) -- short-term
+                # reversal (Jegadeesh 1990) is validated at roughly a
+                # 1-week horizon, but px_to_ma_20's reference is a full
+                # month; px_to_ma_10 tests whether a reference closer to
+                # hold_days resolves that mismatch (baseline_system_
+                # architecture.md open question 14's feature-audit).
+                "px_to_ma_10": close / ma_10 - 1.0,
                 "momentum_5": close.pct_change(5),
                 "momentum_60_skip_10": close.shift(10) / close.shift(60) - 1.0,
                 "pct_from_252d_high": close / close.rolling(252, min_periods=60).max() - 1.0,

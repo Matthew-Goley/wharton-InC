@@ -372,6 +372,17 @@ def test_sector_map_defaults_to_the_real_generated_map():
     assert provider.sector_map.get("AAPL") == "Information Technology"
 
 
+# --- px_to_ma_10 (candidate feature, horizon-match audit) -------------------
+
+def test_px_to_ma_10_is_not_yet_a_promoted_feature(fixture_dirs):
+    assert "px_to_ma_10" not in FEATURE_COLUMNS
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv)
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert "px_to_ma_10" in frame.columns
+    assert frame["px_to_ma_10"].abs().sum() > 0  # real price data moves it off zero
+
+
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
 
 def _quiet_returns(n=400, scale=0.01, seed=0):
