@@ -8,3 +8,10 @@ __pycache__/
 data/processed/*.jsonl
 data/processed/*_stdout.log
 data/processed/*.joblib
+
+# live-scoring price cache -- refreshed by src/data_pipeline/fetch_live.py
+# on every run (daily churn expected), always regenerable, never the
+# source of truth the way data/raw/training/*.csv currently is. Unlike
+# the training set, this has no reason to be a stable, reviewable
+# historical record in git history.
+data/raw/live/
