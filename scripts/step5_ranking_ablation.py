@@ -26,10 +26,13 @@ DESIGN, pre-registered before this ran (open question 11):
   open question 11: highest |t| observed anywhere in this project so far
   is ~1.7, corrected threshold is ~2.6-2.7 for 6 arms) is that nothing
   clears it.
-- PRE-REGISTERED NULL RESPONSE: if nothing clears, the report says so
-  explicitly and defaults to the simplest configuration (raw,
-  agreement_bonus off) -- added complexity has to earn its place. No arm
-  is named a "winner" on an uncorrected or eyeballed basis.
+- PRE-REGISTERED NULL RESPONSE (return-based comparisons only): if no arm
+  clears the corrected threshold, the report says so explicitly. No arm
+  is named a "winner" on an uncorrected or eyeballed basis. This governs
+  return significance -- it does NOT govern concentration, which turned
+  out to be separately, decisively measurable (see BASELINE_ARM's own
+  comment and open question 13): the standing default is vol_adjusted,
+  not raw, on that basis, independent of whether anything here clears.
 
 Usage:
     python -m scripts.step5_ranking_ablation
@@ -60,7 +63,11 @@ RESULT_PATH = DATA_PROCESSED / "step5_ranking_ablation.json"
 
 RANKING_SCORES = ["raw", "vol_adjusted", "uncertainty_adjusted"]
 AGREEMENT_BONUSES = [0.0, 0.1]
-BASELINE_ARM = ("raw", 0.0)  # the pre-registered null-response default
+#: Standing default (baseline_system_architecture.md open question 13) --
+#: revised from ("raw", 0.0) once the PARA-by-arm count showed concentration
+#: was decisively resolved by vol_adjusted (42.6%->3.0%), a question the
+#: null return-based ablation (item 11) never had standing to override.
+BASELINE_ARM = ("vol_adjusted", 0.0)
 
 FAMILY_ALPHA = 0.05
 

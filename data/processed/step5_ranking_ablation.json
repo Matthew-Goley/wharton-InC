@@ -859,46 +859,46 @@
       }
     }
   },
-  "baseline_arm": "raw|bonus=0.0",
+  "baseline_arm": "vol_adjusted|bonus=0.0",
   "n_comparisons": 5,
   "family_alpha": 0.05,
   "corrected_alpha": 0.01,
   "corrected_t_threshold": 2.5758293035489004,
   "comparisons_vs_baseline": {
-    "raw|bonus=0.1": {
-      "vs_baseline": "raw|bonus=0.0",
-      "block_effective_t": -0.1560743804749454,
+    "raw|bonus=0.0": {
+      "vs_baseline": "vol_adjusted|bonus=0.0",
+      "block_effective_t": -0.7698847764185159,
       "cleared_corrected_threshold": false,
-      "only_baseline_n": 93,
-      "only_arm_n": 93
+      "only_baseline_n": 734,
+      "only_arm_n": 734
     },
-    "vol_adjusted|bonus=0.0": {
-      "vs_baseline": "raw|bonus=0.0",
-      "block_effective_t": 0.7698847764185159,
+    "raw|bonus=0.1": {
+      "vs_baseline": "vol_adjusted|bonus=0.0",
+      "block_effective_t": -0.8047856191838715,
       "cleared_corrected_threshold": false,
       "only_baseline_n": 734,
       "only_arm_n": 734
     },
     "vol_adjusted|bonus=0.1": {
-      "vs_baseline": "raw|bonus=0.0",
-      "block_effective_t": 0.7476372010634124,
+      "vs_baseline": "vol_adjusted|bonus=0.0",
+      "block_effective_t": -0.06128433980807888,
       "cleared_corrected_threshold": false,
-      "only_baseline_n": 726,
-      "only_arm_n": 726
+      "only_baseline_n": 115,
+      "only_arm_n": 115
     },
     "uncertainty_adjusted|bonus=0.0": {
-      "vs_baseline": "raw|bonus=0.0",
-      "block_effective_t": 0.7692745739985639,
+      "vs_baseline": "vol_adjusted|bonus=0.0",
+      "block_effective_t": 0.17855078008439523,
       "cleared_corrected_threshold": false,
-      "only_baseline_n": 929,
-      "only_arm_n": 929
+      "only_baseline_n": 979,
+      "only_arm_n": 979
     },
     "uncertainty_adjusted|bonus=0.1": {
-      "vs_baseline": "raw|bonus=0.0",
-      "block_effective_t": 0.7604127402315288,
+      "vs_baseline": "vol_adjusted|bonus=0.0",
+      "block_effective_t": 0.16724372073553598,
       "cleared_corrected_threshold": false,
-      "only_baseline_n": 928,
-      "only_arm_n": 928
+      "only_baseline_n": 979,
+      "only_arm_n": 979
     }
   },
   "decision": "null_default_to_baseline"
