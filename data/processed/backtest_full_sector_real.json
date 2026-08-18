@@ -43,46 +43,46 @@
   "trades_executed": 1988,
   "entries": 994,
   "exits": 994,
-  "entries_with_sector_expert": 994,
-  "win_rate": 0.5382293762575453,
-  "mean_return_per_trade_raw": 0.003285664625436155,
-  "median_return_per_trade_raw": 0.0035349735289457174,
-  "mean_excess_return_per_trade_vs_market": 0.0008366053937088331,
+  "entries_with_sector_expert": 988,
+  "win_rate": 0.5241448692152918,
+  "mean_return_per_trade_raw": 0.0011842545098941356,
+  "median_return_per_trade_raw": 0.0026783109863512955,
+  "mean_excess_return_per_trade_vs_market": -0.0011699616957408254,
   "return_by_rank_bucket": [
     {
       "rank_range": "(0, 1]",
-      "n": 21,
-      "mean_return": -0.03968806220670714,
-      "median_return": -0.07294832826747721,
-      "win_rate": 0.42857142857142855
+      "n": 113,
+      "mean_return": -0.03597425651830399,
+      "median_return": -0.027146191467879444,
+      "win_rate": 0.37168141592920356
     },
     {
       "rank_range": "(1, 3]",
-      "n": 42,
-      "mean_return": -0.003040385074917374,
-      "median_return": -0.004406617493250775,
-      "win_rate": 0.4523809523809524
+      "n": 347,
+      "mean_return": 0.003808637575519631,
+      "median_return": -0.0005117499120348423,
+      "win_rate": 0.48703170028818443
     },
     {
       "rank_range": "(3, 5]",
-      "n": 51,
-      "mean_return": -0.0030380079039744406,
-      "median_return": 0.0009081926890861514,
-      "win_rate": 0.5294117647058824
+      "n": 343,
+      "mean_return": 0.006775266083754712,
+      "median_return": 0.007754756573145061,
+      "win_rate": 0.5830903790087464
     },
     {
       "rank_range": "(5, 10]",
-      "n": 151,
-      "mean_return": -0.001726402818472009,
-      "median_return": 0.0006613908040693506,
-      "win_rate": 0.5099337748344371
+      "n": 191,
+      "mean_return": 0.00835982441869081,
+      "median_return": 0.009790772835780448,
+      "win_rate": 0.5759162303664922
     },
     {
       "rank_range": "(10, 10000]",
-      "n": 729,
-      "mean_return": 0.006368616386643193,
-      "median_return": 0.004915907658477048,
-      "win_rate": 0.5528120713305898
+      "n": 0,
+      "mean_return": null,
+      "median_return": null,
+      "win_rate": null
     }
   ],
   "split_sample_validation": {
@@ -90,68 +90,68 @@
       "2024": [
         {
           "rank_range": "(0, 1]",
-          "n": 21,
-          "mean_return": -0.03968806220670714,
-          "median_return": -0.07294832826747721,
-          "win_rate": 0.42857142857142855
+          "n": 55,
+          "mean_return": -0.061497812945228984,
+          "median_return": -0.05873316023442299,
+          "win_rate": 0.32727272727272727
         },
         {
           "rank_range": "(1, 3]",
-          "n": 42,
-          "mean_return": -0.003040385074917374,
-          "median_return": -0.004406617493250775,
-          "win_rate": 0.4523809523809524
+          "n": 186,
+          "mean_return": -0.005624973132883425,
+          "median_return": -0.0031484590241753763,
+          "win_rate": 0.43548387096774194
         },
         {
           "rank_range": "(3, 5]",
-          "n": 51,
-          "mean_return": -0.0030380079039744406,
-          "median_return": 0.0009081926890861514,
-          "win_rate": 0.5294117647058824
+          "n": 186,
+          "mean_return": 0.009681923268399575,
+          "median_return": 0.00894169018631541,
+          "win_rate": 0.5967741935483871
         },
         {
           "rank_range": "(5, 10]",
-          "n": 151,
-          "mean_return": -0.001726402818472009,
-          "median_return": 0.0006613908040693506,
-          "win_rate": 0.5099337748344371
+          "n": 67,
+          "mean_return": 0.0030447829146460527,
+          "median_return": 0.005481900711272747,
+          "win_rate": 0.582089552238806
         },
         {
           "rank_range": "(10, 10000]",
-          "n": 729,
-          "mean_return": 0.006368616386643193,
-          "median_return": 0.004915907658477048,
-          "win_rate": 0.5528120713305898
+          "n": 0,
+          "mean_return": null,
+          "median_return": null,
+          "win_rate": null
         }
       ],
       "2025": [
         {
           "rank_range": "(0, 1]",
-          "n": 0,
-          "mean_return": null,
-          "median_return": null,
-          "win_rate": null
+          "n": 56,
+          "mean_return": -0.01543059631925842,
+          "median_return": -0.015697725933123574,
+          "win_rate": 0.39285714285714285
         },
         {
           "rank_range": "(1, 3]",
-          "n": 0,
-          "mean_return": null,
-          "median_return": null,
-          "win_rate": null
+          "n": 161,
+          "mean_return": 0.014707094667215086,
+          "median_return": 0.011088952977322153,
+          "win_rate": 0.546583850931677
         },
         {
           "rank_range": "(3, 5]",
-          "n": 0,
-          "mean_return": null,
-          "median_return": null,
-          "win_rate": null
+          "n": 151,
+          "mean_return": 0.0035848477544801437,
+          "median_return": 0.006156750754648277,
+          "win_rate": 0.5629139072847682
         },
         {
           "rank_range": "(5, 10]",
-          "n": 0,
-          "mean_return": null,
-          "median_return": null,
-          "win_rate": null
+          "n": 122,
+          "mean_return": 0.011468960198653674,
+          "median_return": 0.010237913185741077,
+          "win_rate": 0.5737704918032787
         },
         {
           "rank_range": "(10, 10000]",
@@ -164,41 +164,41 @@
     },
     "direction_consistent_across_years": {
       "(0, 1]": true,
-      "(1, 3]": true,
+      "(1, 3]": false,
       "(3, 5]": true,
       "(5, 10]": true,
-      "(10, 10000]": true
+      "(10, 10000]": false
     },
-    "embargoed_entries": 0
+    "embargoed_entries": 10
   },
   "decomposition_vs_broad_only": {
     "n_blocks_total": 100,
     "common": {
-      "n": 66,
-      "mean_return": -0.008589098378469264,
-      "median_return": 0.001136745583813048,
-      "win_rate": 0.5151515151515151
+      "n": 131,
+      "mean_return": -0.009599232367788233,
+      "median_return": -0.001141126133616721,
+      "win_rate": 0.48854961832061067
     },
     "only_a": {
-      "n": 928,
-      "mean_return": -0.0007329940102371928,
-      "median_return": 0.00047305763412619495,
-      "win_rate": 0.5010775862068966,
-      "distinct_blocks": 63,
-      "trades_per_active_block": 14.73015873015873
+      "n": 863,
+      "mean_return": 0.0077206777533534365,
+      "median_return": 0.005252416188252562,
+      "win_rate": 0.5318655851680185,
+      "distinct_blocks": 99,
+      "trades_per_active_block": 8.717171717171718
     },
     "only_b": {
-      "n": 928,
-      "mean_return": 0.0041302059597656355,
-      "median_return": 0.0037893763682710357,
-      "win_rate": 0.5398706896551724,
-      "distinct_blocks": 21,
-      "trades_per_active_block": 44.19047619047619
+      "n": 863,
+      "mean_return": 0.0028211453337369983,
+      "median_return": 0.0035026236064621408,
+      "win_rate": 0.52954808806489,
+      "distinct_blocks": 99,
+      "trades_per_active_block": 8.717171717171718
     },
     "significance_only_a_vs_only_b": {
-      "mean_diff_b_minus_a": 0.004863199970002828,
-      "block_effective_se": 0.013946106730437361,
-      "block_effective_t": 0.34871380694290116
+      "mean_diff_b_minus_a": -0.004899532419616439,
+      "block_effective_se": 0.010903451800161893,
+      "block_effective_t": -0.4493560855236404
     },
     "label_a": "broad_only",
     "label_b": "full_sector_coverage"
