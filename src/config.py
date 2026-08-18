@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from config import cost_model, hold_period
+from src.data_layer.interface import FeatureTable
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +186,21 @@ class TradingConfig:
     hold_days: int = hold_period.HOLD_DAYS
     window_trading_days: int = hold_period.WINDOW_TRADING_DAYS
 
+    #: The standing ranking default (baseline_system_architecture.md open
+    #: question 13: "vol_adjusted", not "raw" — decided on concentration
+    #: grounds, PARA's rank-1 share 42.6% -> 3.0%). Declared HERE, as a real
+    #: config value, specifically so a pipeline reads this rather than
+    #: hardcoding its own literal or relying on OverallModel.rank()'s own
+    #: separate code-level default — that gap (item 26's gap #5) is exactly
+    #: how train_baseline.py silently ranked by "raw" while this decision
+    #: was already standing; open question 30's audit found four MORE
+    #: independent bare `combiner.rank(combined)` call sites with the same
+    #: bug (scripts/train_sector_expert_real.py, train_all_sector_experts_
+    #: real.py x2, backtest_broad_real.py, rerun_full_sector_with_ticker_
+    #: cap.py) — none yet fixed to read this field, tracked as known,
+    #: outstanding landmines rather than silently left for later discovery.
+    ranking_score: str = "vol_adjusted"
+
 
 @dataclass(frozen=True)
 class BaselineConfig:
@@ -193,3 +209,119 @@ class BaselineConfig:
     walk_forward: WalkForwardConfig = field(default_factory=WalkForwardConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     experts: tuple[ExpertSpec, ...] = EXPERTS
+
+
+class ConfigConsistencyError(ValueError):
+    """A pipeline's EFFECTIVE inputs (what a run actually used) diverged
+    from its DECLARED config (what src.config / config/*.py say should
+    govern it). Recurring bug class in this project (baseline_system_
+    architecture.md open question 30 names four prior instances before
+    this axis: the "Technology" vs "Information Technology" sector-name
+    mismatch, the stale materials key in a saved joblib vs. the current
+    EXPERTS roster, the Bonferroni threshold reused across a different arm
+    count, and gap #5 — train_baseline.py's bare combiner.rank(combined)
+    silently ranking by "raw" while vol_adjusted was the declared
+    standing default). A single named exception type so every caller
+    handles this the same way, rather than each check inventing its own
+    ValueError message shape."""
+
+
+def assert_config_consistency(
+    config: BaselineConfig,
+    *,
+    table: Optional[FeatureTable] = None,
+    used_ranking_score: Optional[str] = None,
+    trained_expert_names: Optional[set[str]] = None,
+) -> None:
+    """Check EFFECTIVE inputs against DECLARED config, across every axis
+    this project has already been burned by at least once. Each check only
+    runs if its corresponding input is supplied, so a caller can invoke
+    this with whatever context it has on hand at a given point in a
+    pipeline — no single call site necessarily has all four at once.
+
+    - ``table``: label horizon (table.target_horizon_days) must equal
+      config.trading.hold_days -- generalizes the check that used to live
+      only inline in train_baseline.py (the ONE real pipeline that already
+      had it; every ad hoc backtest script does not, since none of them
+      call train_baseline() at all -- see open question 30). Also checks
+      config.trading.hold_days is one of config/hold_period.py's declared
+      HOLD_DAYS_SWEEP candidates -- NOT strict equality to the single
+      HOLD_DAYS default, since src.pipeline.sweep deliberately constructs
+      configs with other values from that set, and every one of them is
+      legitimate; membership still catches a genuine mistake (e.g.
+      hold_days confused with window_trading_days) without flagging every
+      intentional sweep value. window_trading_days, unlike hold_days, has
+      no legitimate reason to ever vary (it's the competition's actual
+      window length, not a tunable), so it's checked by strict equality
+      against WINDOW_TRADING_DAYS. Also the PACING sanity check
+      _entries_allowed's own ``max(1, ...)`` clamps currently paper over
+      silently: hold_days must leave at least one entry-eligible period
+      inside the window (hold_days <= window_trading_days), not just
+      degrade to "pace as if there's one period left" without ever saying
+      why.
+    - ``used_ranking_score``: must equal config.trading.ranking_score --
+      the direct guard against gap #5's exact failure mode (a caller using
+      a different value, bare-default or otherwise, than the declared
+      standing default).
+    - ``trained_expert_names``: must exactly match {spec.name for spec in
+      config.experts} -- no extras (the stale-materials-key shape), no
+      omissions (a sector that silently failed to train). Symmetric
+      difference reported both ways, not just "sets don't match", so the
+      failure mode is legible without a second investigation.
+    """
+    if table is not None:
+        if table.target_horizon_days != config.trading.hold_days:
+            raise ConfigConsistencyError(
+                f"label horizon mismatch: FeatureTable.target_horizon_days="
+                f"{table.target_horizon_days} but config.trading.hold_days="
+                f"{config.trading.hold_days}. Experts would be trained on the "
+                f"wrong-horizon target for the selector's exit rule."
+            )
+    if config.trading.hold_days not in hold_period.HOLD_DAYS_SWEEP:
+        # NOT a strict equality check against hold_period.HOLD_DAYS -- the
+        # sweep (src.pipeline.sweep, exit_rule_spec.md §2) deliberately
+        # constructs configs with hold_days values other than the single
+        # default, and every one of them is legitimate. Membership in the
+        # pre-declared sweep candidates still catches a genuine mistake
+        # (e.g. hold_days confused with window_trading_days) without
+        # flagging every intentional sweep value as "diverged".
+        raise ConfigConsistencyError(
+            f"config.trading.hold_days={config.trading.hold_days} is not one of "
+            f"config/hold_period.py's declared HOLD_DAYS_SWEEP candidates "
+            f"{hold_period.HOLD_DAYS_SWEEP} -- if this is a deliberate new value, add it "
+            f"there first (the single source of truth for which values are sanctioned); "
+            f"if it isn't deliberate, this is exactly the drift this check exists to catch."
+        )
+    if config.trading.window_trading_days != hold_period.WINDOW_TRADING_DAYS:
+        raise ConfigConsistencyError(
+            f"config.trading.window_trading_days={config.trading.window_trading_days} has "
+            f"diverged from config/hold_period.py's WINDOW_TRADING_DAYS="
+            f"{hold_period.WINDOW_TRADING_DAYS}."
+        )
+    if config.trading.hold_days > config.trading.window_trading_days:
+        raise ConfigConsistencyError(
+            f"pacing is impossible: hold_days={config.trading.hold_days} > "
+            f"window_trading_days={config.trading.window_trading_days} -- every position "
+            f"entered would need to exit past the end of the window. "
+            f"TradeSelector._entries_allowed's max(1, ...) clamp would silently degrade "
+            f"pacing to 'one period left' rather than surface this."
+        )
+
+    if used_ranking_score is not None and used_ranking_score != config.trading.ranking_score:
+        raise ConfigConsistencyError(
+            f"ranking_score mismatch: this run used {used_ranking_score!r} but "
+            f"config.trading.ranking_score declares {config.trading.ranking_score!r} as the "
+            f"standing default (baseline_system_architecture.md open question 13)."
+        )
+
+    if trained_expert_names is not None:
+        declared = {spec.name for spec in config.experts}
+        extra = trained_expert_names - declared
+        missing = declared - trained_expert_names
+        if extra or missing:
+            raise ConfigConsistencyError(
+                f"roster mismatch: trained experts {sorted(trained_expert_names)} do not match "
+                f"declared config.experts {sorted(declared)}. "
+                f"extra (trained but not declared): {sorted(extra) or 'none'}. "
+                f"missing (declared but not trained): {sorted(missing) or 'none'}."
+            )

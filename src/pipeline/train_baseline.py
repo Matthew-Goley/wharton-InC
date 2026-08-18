@@ -29,7 +29,7 @@ from typing import Callable, Optional
 import pandas as pd
 
 from src.combiner.overall_model import OverallModel
-from src.config import BaselineConfig
+from src.config import BaselineConfig, assert_config_consistency
 from src.data_layer.interface import DataProvider
 from src.experts.base import ExpertModel
 from src.experts.registry import ExpertData, build_all_expert_data
@@ -84,17 +84,13 @@ def train_baseline(
     if portfolio is None:
         portfolio = load_portfolio_state()
     table = data_provider.get_feature_table(start, end, hold_days=config.trading.hold_days)
-    if table.target_horizon_days != config.trading.hold_days:
-        # exit_rule_spec.md §2/§9: the label horizon and the selector's
-        # exit timing must always agree — a provider that ignores the
-        # requested hold_days (e.g. a stale cached feature table) is a
-        # silent correctness bug, not something to proceed past.
-        raise ValueError(
-            f"label horizon mismatch: FeatureTable.target_horizon_days="
-            f"{table.target_horizon_days} but config.trading.hold_days="
-            f"{config.trading.hold_days}. Experts would be trained on the "
-            f"wrong-horizon target for the selector's exit rule."
-        )
+    # exit_rule_spec.md §2/§9: the label horizon and the selector's exit
+    # timing must always agree, among other declared-vs-effective checks
+    # this project has been burned by before (open question 30) —
+    # extracted from an inline check into the shared, reusable
+    # assert_config_consistency so every axis it covers is checked the
+    # same way, not just this one.
+    assert_config_consistency(config, table=table)
     expert_data = build_all_expert_data(table, config.experts)
 
     search_results: dict[str, SearchResult] = {}
@@ -113,9 +109,27 @@ def train_baseline(
         trained_experts[name] = model
         expert_predictions[name] = model.predict(edata.X)
 
+    # Roster check here, not earlier: trained_experts is only fully
+    # populated once the per-expert loop above finishes. Catches the
+    # "trained a different set than config.experts declares" shape (open
+    # question 30's stale-materials-key finding was this exact mismatch,
+    # just discovered by hand against an on-disk artifact instead of
+    # asserted at the point of use).
+    assert_config_consistency(config, trained_expert_names=set(trained_experts))
+
     combiner = OverallModel(config.experts)
     combined = combiner.combine(expert_predictions)
-    ranked = combiner.rank(combined)
+    # Read the standing ranking default from config rather than trusting
+    # OverallModel.rank()'s own separate bare-call default -- this exact
+    # gap (config.py declaring vol_adjusted standing, this call site
+    # silently ranking "raw" instead) was open question 26's gap #5, and
+    # open question 30's audit found it repeated across four OTHER ad hoc
+    # backtest scripts that don't go through train_baseline() at all and
+    # so aren't covered by this fix.
+    ranking_score = config.trading.ranking_score
+    risk = table.frame["volatility_20"].reindex(combined.index) if ranking_score == "vol_adjusted" else None
+    ranked = combiner.rank(combined, ranking_score=ranking_score, risk=risk)
+    assert_config_consistency(config, used_ranking_score=ranking_score)
 
     trading_window = ranked
     if trading_window_periods is not None:
