@@ -199,10 +199,45 @@ class RealDataProvider(DataProvider):
         data_dir: Path = TRAINING_DIR,
         membership_csv: Path = MEMBERSHIP_CSV,
         demean_target: bool = True,
+        normalize_features: bool = False,
     ):
         #: When True (the default) the label is excess return over that date's
         #: universe mean. See _demean_target for what that changes downstream.
         self.demean_target = demean_target
+        #: When True, every feature is replaced by its cross-sectional
+        #: percentile rank that day (see _normalize_features_cross_sectionally).
+        #:
+        #: TESTED AND REJECTED as a fix for argmax concentration (one name
+        #: dominating the daily #1-ranked slot) -- kept here, off by default,
+        #: as a negative finding so it doesn't get re-tried without reading
+        #: this. Gate result: PARA's daily-argmax share barely moved (49.3%
+        #: -> 45.1%, ~9% of the way to what fair rotation implies) while
+        #: out-of-sample IC dropped a real-looking +0.0209 -> +0.0141 (~4.6
+        #: SE from zero down to ~3.1 SE). It CAN'T work, not just didn't
+        #: this time: percentile rank is order-preserving within each
+        #: feature -- a name that's the cross-section's most extreme value
+        #: every day is still the most extreme value after rank-transforming
+        #: (1.0 instead of a raw reading), the same corner of feature space,
+        #: mapped to the same extreme prediction. Winsorized clipping fails
+        #: the identical way (order-preserving in the interior, and an
+        #: outlier past the clip bound still lands ON the bound, still
+        #: top-ranked) -- don't try that either. No monotonic per-feature
+        #: transform can fix persistent argmax dominance by a name that's a
+        #: genuine, consistent extreme on the features that matter; the
+        #: actual fix is TradingConfig.max_ticker_share_pct, which doesn't
+        #: touch the model or cost any IC. Full writeup: baseline_system_
+        #: architecture.md's ablation table, "Cross-sectional feature
+        #: normalization" row.
+        #:
+        #: Off by default. Every feature here is already scale-free *within
+        #: a ticker's own history* (a ratio, not a raw price level), but
+        #: never made comparable *across tickers on the same day* -- a tree
+        #: model sees PARA's raw feature magnitude, not its relative standing
+        #: that day, and trees don't extrapolate past the range of values
+        #: seen in training. Diagnosed from PARA being the single
+        #: highest-scoring name in the whole universe on 245/497 test days
+        #: (49.3%) — see baseline_system_architecture.md's ablation table.
+        self.normalize_features = normalize_features
         if universe is None:
             from config.training_universe import TRAINING_UNIVERSE  # local import: avoid a hard dependency at module load
             universe = TRAINING_UNIVERSE
@@ -250,8 +285,10 @@ class RealDataProvider(DataProvider):
         frame = frame[(timestamps >= start_ts) & (timestamps <= end_ts)]
         frame = self._filter_point_in_time(frame)
         frame = frame.sort_index()
-        # After the point-in-time filter, so the "market" is the roster that
-        # was actually investable that day rather than every name on file.
+        # After the point-in-time filter, so both cross-sectional operations
+        # below are computed against the roster that was actually investable
+        # that day, not every name on file.
+        frame = self._normalize_features_cross_sectionally(frame)
         frame = self._demean_target(frame)
 
         return FeatureTable(
@@ -321,6 +358,41 @@ class RealDataProvider(DataProvider):
             return None
         df.index = pd.MultiIndex.from_product([[ticker], df.index], names=["ticker", "timestamp"])
         return df
+
+    def _normalize_features_cross_sectionally(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Replace every feature with its cross-sectional percentile rank
+        that day, centered to roughly (-0.5, 0.5].
+
+        Rank, not z-score: a z-score still lets one name's raw extremity
+        dominate (an outlier just gets a bigger |z|, preserving exactly the
+        magnitude-domination problem this exists to remove). Percentile rank
+        is bounded regardless of how extreme the raw value is — the single
+        most extreme name that day gets *rank* 1, the same rank any other
+        day's most-extreme name would get, whether its raw reading was mildly
+        or wildly outside normal range. That's the point: it caps how much
+        one chaotic name's *magnitude* can dominate the model's input, without
+        touching its *ordinal* position (still identifiably the most extreme
+        name that day).
+
+        Applied uniformly to every column in FEATURE_COLUMNS, including
+        log_dollar_volume — its raw level is deliberately meaningful (size
+        effects are real), but "small relative to peers on this day" is
+        already what a size effect cross-sectionally means, and ranking it
+        removes 8 years of nominal market growth as a confound for free
+        (a "small" 2018 dollar-volume figure isn't a "small" 2025 one).
+
+        NaN passes through unchanged (pandas' rank(pct=True) excludes NaN
+        from the ranking and returns NaN for it) — a feature that's missing
+        because a ticker's own rolling window hasn't filled yet should stay
+        missing, not be assigned a fabricated rank.
+        """
+        if not self.normalize_features or frame.empty:
+            return frame
+        normalized = frame.copy()
+        grouped = frame.groupby(level="timestamp")
+        for col in FEATURE_COLUMNS:
+            normalized[col] = grouped[col].rank(pct=True) - 0.5
+        return normalized
 
     def _demean_target(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Turn the label into excess return over that date's universe mean.

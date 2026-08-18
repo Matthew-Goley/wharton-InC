@@ -238,6 +238,67 @@ def test_demeaning_can_be_disabled(fixture_dirs):
     assert not np.allclose(per_date.to_numpy(), 0.0, atol=1e-12)
 
 
+def test_feature_normalization_is_off_by_default(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    # Raw ratio features aren't bounded to (-0.5, 0.5] -- with normalization
+    # off, at least one column should have values outside that range.
+    assert (frame[FEATURE_COLUMNS].abs() > 0.5).to_numpy().any()
+
+
+def test_normalized_features_are_bounded_percentile_ranks(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        normalize_features=True,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    values = frame[FEATURE_COLUMNS].to_numpy()
+    finite = values[np.isfinite(values)]
+    assert finite.min() >= -0.5 - 1e-9
+    assert finite.max() <= 0.5 + 1e-9
+
+
+def test_normalized_feature_ranks_are_consistent_within_a_date(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        normalize_features=True,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    # Same-date rows for a feature with no ties should be a permutation of
+    # the same rank set (evenly spaced through (-0.5, 0.5]) every date that
+    # has the same number of names present.
+    col = "px_to_ma_20"
+    by_date = frame.groupby(level="timestamp")[col].apply(lambda s: tuple(sorted(s.dropna().to_numpy())))
+    sizes = frame.groupby(level="timestamp")[col].count()
+    for date, ranks in by_date.items():
+        n = sizes.loc[date]
+        if n == 0:
+            continue
+        expected = tuple(sorted((i + 1) / n - 0.5 for i in range(n)))
+        assert np.allclose(ranks, expected, atol=1e-9), f"{date}: {ranks} != {expected}"
+
+
+def test_normalization_leaves_nan_as_nan_not_a_fabricated_rank(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        normalize_features=True,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    # realized_kurt_20 needs a 10-period warmup -- rows before that are NaN
+    # pre-normalization and must stay NaN, not get assigned a rank.
+    raw_provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+    )
+    raw_frame = raw_provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert (frame["realized_kurt_20"].isna() == raw_frame["realized_kurt_20"].isna()).all()
+
+
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
 
 def _quiet_returns(n=400, scale=0.01, seed=0):

@@ -1,0 +1,35 @@
+{
+  "out_of_sample_ic_normalized": 0.01408959427617161,
+  "out_of_sample_ic_raw_baseline": 0.0209,
+  "para_argmax_days_normalized": 224,
+  "para_argmax_days_raw_baseline": 245,
+  "total_days": 497,
+  "para_argmax_share_normalized": 0.4507042253521127,
+  "para_argmax_share_raw_baseline": 0.49295774647887325,
+  "distinct_argmax_winners_normalized": 58,
+  "distinct_argmax_winners_raw_baseline": 46,
+  "top_argmax_winners_normalized": {
+    "PARA": 224,
+    "SMCI": 39,
+    "MRNA": 30,
+    "ENPH": 24,
+    "INTC": 20,
+    "ERIE": 17,
+    "FISV": 17,
+    "ALB": 12,
+    "TSLA": 8,
+    "PSKY": 7
+  },
+  "verdict": "PARTIAL -- some reduction but not dramatic",
+  "best_genome": {
+    "max_depth": 4,
+    "learning_rate": 0.0785693348705025,
+    "n_estimators": 290,
+    "subsample": 0.9292989599556912,
+    "colsample_bytree": 0.5036811348755028,
+    "min_child_weight": 6.407563671505728,
+    "reg_alpha": 1.8245968053912627,
+    "reg_lambda": 9.255934503278814,
+    "gamma": 4.217874757988763
+  }
+}
