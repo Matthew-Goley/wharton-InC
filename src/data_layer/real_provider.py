@@ -318,15 +318,22 @@ class RealDataProvider(DataProvider):
         volume = raw["Volume"]
         returns = close.pct_change()
         ma_20 = close.rolling(20, min_periods=1).mean()
-        #: CANDIDATE feature ingredient (not in FEATURE_COLUMNS) -- see
+        #: CANDIDATE feature ingredients (not in FEATURE_COLUMNS) -- see
         #: px_to_ma_10's own note below FEATURE_COLUMNS for the horizon-
-        #: match reasoning.
+        #: match reasoning, and baseline_system_architecture.md open
+        #: question 18 for the 5-day family-swap test these (and the
+        #: other *_5 candidates below) feed.
         ma_10 = close.rolling(10, min_periods=1).mean()
+        ma_5 = close.rolling(5, min_periods=1).mean()
 
         # Semivariance split — downside and upside volatility are priced
         # differently (Bollerslev et al., "good" vs "bad" volatility).
         downside = returns.where(returns < 0, 0.0).pow(2).rolling(20, min_periods=5).mean().pow(0.5)
         upside = returns.where(returns > 0, 0.0).pow(2).rolling(20, min_periods=5).mean().pow(0.5)
+        # 5-day analogs -- require the full window (min_periods=5) since
+        # there's no room to go lower and still mean anything.
+        downside_5 = returns.where(returns < 0, 0.0).pow(2).rolling(5, min_periods=5).mean().pow(0.5)
+        upside_5 = returns.where(returns > 0, 0.0).pow(2).rolling(5, min_periods=5).mean().pow(0.5)
 
         dollar_volume = close * volume
 
@@ -349,6 +356,14 @@ class RealDataProvider(DataProvider):
                 "px_to_ma_10": close / ma_10 - 1.0,
                 "momentum_5": close.pct_change(5),
                 "momentum_60_skip_10": close.shift(10) / close.shift(60) - 1.0,
+                # CANDIDATE feature (not in FEATURE_COLUMNS) -- Jegadeesh &
+                # Titman 1993 validates 3-12 month formation predicting
+                # 3-12 months ahead; a 60-day formation against a 5-day
+                # target is the single largest horizon mismatch in the
+                # feature set (baseline_system_architecture.md open
+                # question 16). Scaled down ~6x, preserving the original's
+                # skip-the-most-recent-stretch structure (60/10 -> 10/2).
+                "momentum_10_skip_2": close.shift(2) / close.shift(10) - 1.0,
                 "pct_from_252d_high": close / close.rolling(252, min_periods=60).max() - 1.0,
                 "volatility_20": returns.rolling(20, min_periods=5).std(),
                 "semivol_skew": (upside - downside) / (upside + downside + _EPS),
@@ -365,6 +380,22 @@ class RealDataProvider(DataProvider):
                 "volume_shock": volume / (volume.rolling(20, min_periods=5).mean() + _EPS),
                 "ret_vol_corr_20": returns.rolling(20, min_periods=10).corr(volume.pct_change()),
                 "jump_ratio": jump_ratio(close),
+                # CANDIDATE features (not in FEATURE_COLUMNS) -- the 5-day
+                # cohort for baseline_system_architecture.md open question
+                # 18's family swap: same formulas as their 20-day
+                # counterparts above, windowed to match hold_days=5
+                # instead of the ~monthly horizon those features'
+                # literature actually validates. min_periods=5 (the full
+                # window) throughout -- no room to go lower and still mean
+                # anything, especially for skew/kurtosis.
+                "px_to_ma_5": close / ma_5 - 1.0,
+                "volatility_5": returns.rolling(5, min_periods=5).std(),
+                "semivol_skew_5": (upside_5 - downside_5) / (upside_5 + downside_5 + _EPS),
+                "max_ret_5": returns.rolling(5, min_periods=5).max(),
+                "min_ret_5": returns.rolling(5, min_periods=5).min(),
+                "realized_skew_5": returns.rolling(5, min_periods=5).skew(),
+                "realized_kurt_5": returns.rolling(5, min_periods=5).kurt(),
+                "ret_vol_corr_5": returns.rolling(5, min_periods=5).corr(volume.pct_change()),
                 TARGET_COLUMN: fwd_return,
                 "sector": self.sector_map.get(ticker, UNKNOWN_SECTOR),
             }

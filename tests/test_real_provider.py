@@ -47,6 +47,13 @@ def fixture_dirs(tmp_path):
     for i, ticker in enumerate(["ALWAYS", "LEAVER", "JOINER"]):
         # Distinct wiggly series per ticker so features/labels aren't constant.
         close = 100 + np.arange(len(dates)) * 0.1 + np.sin(np.arange(len(dates)) / (3 + i)) * 2
+        # Volume also wiggly, on a DIFFERENT period/phase than close, so
+        # volume-vs-return correlation features (ret_vol_corr_*) have real
+        # variance to work with instead of correlating against a constant
+        # (undefined, all-NaN) -- a constant Volume silently starved every
+        # volume-dependent feature of real test coverage until this was
+        # caught by the 5-day cohort's own not-all-NaN check.
+        volume = 1_000_000 * (1 + 0.3 * np.sin(np.arange(len(dates)) / (4 + i) + i))
         pd.DataFrame(
             {
                 "timestamp": dates,
@@ -57,7 +64,7 @@ def fixture_dirs(tmp_path):
                 # Deliberately wrong: if anything reads Adj Close instead of
                 # Close, the features collapse to this constant.
                 "Adj Close": 1.0,
-                "Volume": 1_000_000,
+                "Volume": volume,
             }
         ).to_csv(data_dir / f"{ticker}_1d.csv", index=False)
 
@@ -381,6 +388,34 @@ def test_px_to_ma_10_is_not_yet_a_promoted_feature(fixture_dirs):
     frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
     assert "px_to_ma_10" in frame.columns
     assert frame["px_to_ma_10"].abs().sum() > 0  # real price data moves it off zero
+
+
+# --- 5-day cohort (candidate features, open question 18's family swap) -----
+
+_FIVE_DAY_COHORT = [
+    "px_to_ma_5", "volatility_5", "semivol_skew_5", "max_ret_5", "min_ret_5",
+    "realized_skew_5", "realized_kurt_5", "ret_vol_corr_5",
+]
+
+
+def test_five_day_cohort_is_computed_but_not_yet_promoted(fixture_dirs):
+    for col in _FIVE_DAY_COHORT:
+        assert col not in FEATURE_COLUMNS
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv)
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    for col in _FIVE_DAY_COHORT:
+        assert col in frame.columns
+        assert frame[col].notna().any(), f"{col} is all-NaN -- window/min_periods likely misconfigured"
+
+
+def test_momentum_10_skip_2_is_not_yet_a_promoted_feature(fixture_dirs):
+    assert "momentum_10_skip_2" not in FEATURE_COLUMNS
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv)
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert "momentum_10_skip_2" in frame.columns
+    assert frame["momentum_10_skip_2"].notna().any()
 
 
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
