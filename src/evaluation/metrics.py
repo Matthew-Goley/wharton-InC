@@ -24,6 +24,57 @@ def information_coefficient(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(ic) if np.isfinite(ic) else 0.0
 
 
+def _per_date_ic(
+    dates: np.ndarray, y_true: np.ndarray, y_pred: np.ndarray, min_names: int
+) -> pd.Series:
+    """Per-date Spearman IC, one value per qualifying date -- the shared
+    building block :func:`cross_sectional_ic` averages and
+    :func:`per_date_cross_sectional_ic` / ``src.evaluation.ic_comparison``
+    consume directly. Extracted so the aggregate and anything needing
+    per-date granularity (paired significance testing, effect-size
+    reporting) share one vectorized implementation rather than a diagnostic
+    script silently reimplementing a slower scipy.stats.spearmanr loop that
+    could drift from it -- which happened repeatedly before this was
+    factored out.
+    """
+    frame = pd.DataFrame({"date": dates, "y": y_true, "p": y_pred})
+    frame = frame[np.isfinite(frame["y"]) & np.isfinite(frame["p"])]
+    if frame.empty:
+        return pd.Series(dtype=float)
+
+    counts = frame.groupby("date", sort=False)["y"].transform("size")
+    frame = frame[counts >= min_names]
+    if frame.empty:
+        return pd.Series(dtype=float)
+
+    grouped = frame.groupby("date", sort=False)
+    # Spearman == Pearson on ranks, and ranking per date lets the whole thing
+    # run as grouped sums instead of one scipy call per date. At ~900 genomes
+    # x 5 folds that difference is minutes, not microseconds.
+    frame = frame.assign(ry=grouped["y"].rank(), rp=grouped["p"].rank())
+    frame["ry_rp"] = frame["ry"] * frame["rp"]
+    frame["ry_sq"] = frame["ry"] ** 2
+    frame["rp_sq"] = frame["rp"] ** 2
+
+    agg = frame.groupby("date", sort=False).agg(
+        n=("ry", "size"),
+        sum_x=("ry", "sum"),
+        sum_y=("rp", "sum"),
+        sum_xy=("ry_rp", "sum"),
+        sum_xx=("ry_sq", "sum"),
+        sum_yy=("rp_sq", "sum"),
+    )
+
+    cov = agg["sum_xy"] - agg["sum_x"] * agg["sum_y"] / agg["n"]
+    var_x = agg["sum_xx"] - agg["sum_x"] ** 2 / agg["n"]
+    var_y = agg["sum_yy"] - agg["sum_y"] ** 2 / agg["n"]
+
+    denominator = np.sqrt(var_x * var_y)
+    # denominator == 0 means one side was constant that date (every name tied,
+    # or a collapsed model predicting the same value for everything).
+    return (cov / denominator).replace([np.inf, -np.inf], np.nan).dropna()
+
+
 def cross_sectional_ic(
     dates: np.ndarray,
     y_true: np.ndarray,
@@ -53,45 +104,30 @@ def cross_sectional_ic(
 
     Returns 0.0 if no date qualifies.
     """
-    frame = pd.DataFrame({"date": dates, "y": y_true, "p": y_pred})
-    frame = frame[np.isfinite(frame["y"]) & np.isfinite(frame["p"])]
-    if frame.empty:
-        return 0.0
-
-    counts = frame.groupby("date", sort=False)["y"].transform("size")
-    frame = frame[counts >= min_names]
-    if frame.empty:
-        return 0.0
-
-    grouped = frame.groupby("date", sort=False)
-    # Spearman == Pearson on ranks, and ranking per date lets the whole thing
-    # run as grouped sums instead of one scipy call per date. At ~900 genomes
-    # x 5 folds that difference is minutes, not microseconds.
-    frame = frame.assign(ry=grouped["y"].rank(), rp=grouped["p"].rank())
-    frame["ry_rp"] = frame["ry"] * frame["rp"]
-    frame["ry_sq"] = frame["ry"] ** 2
-    frame["rp_sq"] = frame["rp"] ** 2
-
-    agg = frame.groupby("date", sort=False).agg(
-        n=("ry", "size"),
-        sum_x=("ry", "sum"),
-        sum_y=("rp", "sum"),
-        sum_xy=("ry_rp", "sum"),
-        sum_xx=("ry_sq", "sum"),
-        sum_yy=("rp_sq", "sum"),
-    )
-
-    cov = agg["sum_xy"] - agg["sum_x"] * agg["sum_y"] / agg["n"]
-    var_x = agg["sum_xx"] - agg["sum_x"] ** 2 / agg["n"]
-    var_y = agg["sum_yy"] - agg["sum_y"] ** 2 / agg["n"]
-
-    denominator = np.sqrt(var_x * var_y)
-    # denominator == 0 means one side was constant that date (every name tied,
-    # or a collapsed model predicting the same value for everything).
-    per_date = (cov / denominator).replace([np.inf, -np.inf], np.nan).dropna()
+    per_date = _per_date_ic(dates, y_true, y_pred, min_names)
     if per_date.empty:
         return 0.0
     return float(per_date.mean())
+
+
+def per_date_cross_sectional_ic(
+    dates: np.ndarray,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    min_names: int = MIN_NAMES_PER_DATE,
+) -> pd.Series:
+    """The per-date IC series :func:`cross_sectional_ic` averages, indexed
+    by date. Use this directly (never a hand-rolled per-date loop) whenever
+    a diagnostic needs per-date granularity -- most importantly, paired
+    significance testing between two prediction sets via
+    ``src.evaluation.ic_comparison.paired_ic_comparison``, now the standard
+    tool for comparing architectures/features/hyperparameters (see
+    baseline_system_architecture.md's measurement-target-pivot note):
+    backtest return, filtered through TradeSelector's mechanics, resolves
+    differences an order of magnitude coarser than per-date IC does on the
+    same data.
+    """
+    return _per_date_ic(dates, y_true, y_pred, min_names)
 
 
 def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:

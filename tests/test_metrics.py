@@ -7,6 +7,7 @@ from src.evaluation.metrics import (
     MIN_NAMES_PER_DATE,
     cross_sectional_ic,
     information_coefficient,
+    per_date_cross_sectional_ic,
 )
 
 
@@ -94,3 +95,21 @@ def test_non_finite_rows_are_dropped_not_fatal():
 def test_empty_input_scores_zero():
     empty = np.array([], dtype="datetime64[ns]")
     assert cross_sectional_ic(empty, np.array([]), np.array([])) == 0.0
+
+
+def test_per_date_series_averages_to_the_aggregate():
+    """cross_sectional_ic and per_date_cross_sectional_ic must share the
+    same underlying computation (refactored to a common helper) -- the
+    aggregate is just the series' mean, not a separately-derived number."""
+    dates, y, rng = _panel(n_dates=15, n_names=40, seed=11)
+    pred = 0.4 * y + rng.normal(size=y.size)
+    series = per_date_cross_sectional_ic(dates, y, pred)
+    assert series.index.nunique() == 15  # one value per date
+    assert float(series.mean()) == pytest.approx(cross_sectional_ic(dates, y, pred))
+
+
+def test_per_date_series_empty_when_nothing_qualifies():
+    thin = np.repeat(pd.date_range("2020-01-01", periods=2), MIN_NAMES_PER_DATE - 1)
+    y = np.arange(thin.size, dtype=float)
+    series = per_date_cross_sectional_ic(thin, y, y)
+    assert series.empty
