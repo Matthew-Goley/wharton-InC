@@ -15,3 +15,9 @@ data/processed/*.joblib
 # the training set, this has no reason to be a stable, reviewable
 # historical record in git history.
 data/raw/live/
+
+# scripts/score_live.py's dated recommendation output -- "today's
+# recommendations", meaningless after the fact, regenerated every real
+# run. The manually-maintained portfolio_state.json (updated once a
+# recommendation is actually acted on) is the durable record, not this.
+data/processed/live_recommendations/

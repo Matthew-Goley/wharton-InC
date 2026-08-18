@@ -25,8 +25,6 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-import joblib
-
 from scripts.backtest_broad_real import (
     BEST_GENOME,
     TEST_END,
@@ -42,7 +40,7 @@ from src.data_layer import RealDataProvider
 from src.data_layer.real_provider import MARKET_TARGET_COLUMN, RAW_TARGET_COLUMN
 from src.evaluation.metrics import cross_sectional_ic
 from src.evaluation.selection_diff import decompose_selection_change
-from src.experts.base import ExpertModel
+from src.experts.base import ExpertModel, save_experts
 from src.experts.registry import build_expert_data
 from src.ga.search import GeneticSearch, default_max_workers
 from src.selection.trade_selector import TradeSelector
@@ -94,7 +92,13 @@ def train_one_sector(spec, train_table, config, ga_config, workers: int, t_start
          "best_genome": result.best_genome.as_xgb_params(), "elapsed_s": round(fit_s, 1)})
     print(f"  GA done in {fit_s:.1f}s -- best fitness (cross-sectional IC): {result.best_fitness:+.4f}")
 
-    model = ExpertModel(spec.name, result.best_genome, random_seed=config.ga.random_seed).fit(edata.X, edata.y)
+    # sector= and hold_days= threaded through so the saved artifact can
+    # self-describe (baseline_system_architecture.md open question 36) --
+    # the whole point of building save_experts was for real training
+    # scripts to actually use it, not just make it possible to use.
+    model = ExpertModel(spec.name, result.best_genome, random_seed=config.ga.random_seed, sector=spec.sector).fit(
+        edata.X, edata.y, hold_days=config.trading.hold_days
+    )
     return model, result
 
 
@@ -114,7 +118,7 @@ def main() -> None:
     print("\nRetraining the broad expert's already-found genome on TRAIN-only data...")
     t0 = time.perf_counter()
     broad_model = ExpertModel(BROAD_EXPERT, BEST_GENOME, random_seed=config.ga.random_seed).fit(
-        broad_train.X, broad_train.y
+        broad_train.X, broad_train.y, hold_days=config.trading.hold_days
     )
     print(f"  fit in {time.perf_counter()-t0:.1f}s")
 
@@ -127,8 +131,10 @@ def main() -> None:
             models[spec.name] = model
             sector_fitness[spec.name] = result.best_fitness
 
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(models, MODEL_PATH)
+    # Self-describing path by default (open question 36) -- the guard
+    # (assert_config_consistency) can only protect an artifact that
+    # actually carries the metadata it checks.
+    save_experts(models, MODEL_PATH)
     print(f"\nAll experts trained in {time.perf_counter()-t_start:.1f}s total. Saved: {MODEL_PATH}")
 
     trained_sector_specs = [s for s in SECTOR_SPECS if s.name in models]
