@@ -41,6 +41,18 @@ on the differing subset -- not conventionally significant, same as
 essentially every other finding in this project measured this way. Real,
 suggestive, not established.
 
+Cross-sectional feature normalization was tried as an alternative,
+model-level route to a PARA-independent read and rejected (see
+baseline_system_architecture.md's ablation table): it's structurally
+incapable of fixing persistent argmax dominance (percentile rank is
+order-preserving, so a name that's the day's most extreme value stays the
+day's most extreme value after transforming), and it cost a real chunk of
+the model's out-of-sample IC finding that out. This script -- the cap,
+which never touches the model at all -- is the actual PARA-independent
+read: it now runs the SAME standard diagnostic suite (rank buckets,
+split-sample validation) as scripts/train_all_sector_experts_real.py, just
+under a capped TradeSelector, alongside the period-champion view above.
+
 Usage:
     python -m scripts.rerun_full_sector_with_ticker_cap
 """
@@ -52,7 +64,7 @@ from pathlib import Path
 
 import joblib
 
-from scripts.backtest_broad_real import TEST_START, TEST_END
+from scripts.backtest_broad_real import TEST_START, TEST_END, _rank_bucket_stats, _split_sample_validation
 from src.combiner.overall_model import OverallModel
 from src.config import BaselineConfig, EXPERTS
 from src.data_layer import RealDataProvider
@@ -163,6 +175,38 @@ def main() -> None:
     if diff["significance_only_a_vs_only_b"]:
         print(f"  block-effective t: {diff['significance_only_a_vs_only_b']['block_effective_t']:+.2f}")
 
+    # THE FULL DIAGNOSTIC SUITE, under the cap -- same rank-bucket +
+    # split-sample analysis every other checkpoint here gets, run on the
+    # CAPPED entries as the primary (PARA-independent) read, not the
+    # uncapped ones.
+    rank_bucket_stats_capped = _rank_bucket_stats(entries_capped, raw.loc[entries_capped.index])
+    rank_bucket_stats_uncapped = _rank_bucket_stats(entries_uncapped, raw.loc[entries_uncapped.index])
+    split_validation_capped = _split_sample_validation(
+        entries_capped, raw.loc[entries_capped.index], all_trading_days, config.trading.hold_days
+    )
+
+    print("\n=== Full rank-bucket breakdown, CAPPED (the PARA-independent read) ===")
+    for row in rank_bucket_stats_capped:
+        if row["n"]:
+            print(f"  rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
+                  f"median={row['median_return']:+.4%}  win_rate={row['win_rate']:.1%}")
+    print("\n=== Full rank-bucket breakdown, UNCAPPED (for comparison) ===")
+    for row in rank_bucket_stats_uncapped:
+        if row["n"]:
+            print(f"  rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
+                  f"median={row['median_return']:+.4%}  win_rate={row['win_rate']:.1%}")
+
+    print(f"\nSplit-sample validation, CAPPED (embargoed {split_validation_capped['embargoed_entries']} entries):")
+    for year, year_stats in split_validation_capped["by_year"].items():
+        print(f"  {year}:")
+        for row in year_stats:
+            if row["n"]:
+                print(f"    rank {row['rank_range']:>10}: n={row['n']:>4}  mean={row['mean_return']:+.4%}  "
+                      f"win_rate={row['win_rate']:.1%}")
+    print("  consistent across years:", {
+        k: ("YES" if v else "no") for k, v in split_validation_capped["direction_consistent_across_years"].items()
+    })
+
     results = {
         "ticker_cap": TICKER_CAP,
         "raw_daily_argmax_winner_para_share": float((daily_winner_tickers == "PARA").mean()),
@@ -170,6 +214,9 @@ def main() -> None:
         "period_champion_uncapped": stats_uncapped,
         "period_champion_capped": stats_capped,
         "decomposition_uncapped_vs_capped": diff,
+        "rank_bucket_stats_capped": rank_bucket_stats_capped,
+        "rank_bucket_stats_uncapped": rank_bucket_stats_uncapped,
+        "split_sample_validation_capped": split_validation_capped,
     }
     RESULT_PATH.write_text(json.dumps(results, indent=2) + "\n")
     print(f"\nSaved: {RESULT_PATH}")

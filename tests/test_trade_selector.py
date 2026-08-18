@@ -1,5 +1,6 @@
 """Covers exit_rule_spec.md §8's test cases against the fixed-hold TradeSelector."""
 import pandas as pd
+import pytest
 
 from config import cost_model
 from src.config import TradingConfig
@@ -198,14 +199,85 @@ def test_real_position_without_scheduled_exit_is_force_closed_and_logged():
     assert any(entry["ticker"] == "AAA" for entry in selector.force_close_log)
 
 
+def test_derived_pacing_spreads_entries_across_the_whole_window_not_just_the_start():
+    """Regression for the actual bug: a fixed top_n_per_period let a real
+    full-sector-coverage backtest blow through its entire multi-year budget
+    in the first ~100 of 497 days the moment eligible candidates became
+    abundant, leaving ~19 months completely untested. Here: 60 periods,
+    2 eligible candidates every single period (abundant), budget sized for
+    roughly one entry every 3 periods on average -- entries must appear
+    past the halfway point, not be exhausted early."""
+    hold_days, window = 2, 60
+    budget = 40  # ~20 round trips over 60 periods
+    selector = TradeSelector(_config(trade_budget=budget, hold_days=hold_days, window_trading_days=window))
+    rows = {}
+    for i in range(window):
+        rows[(f"A{i}", PERIODS[i])] = (EDGE, 1)
+        rows[(f"B{i}", PERIODS[i])] = (EDGE / 2, 2)
+    trades = selector.run(_ranked(rows))
+    entries = _entries(trades)
+    periods_used = entries["period"]
+    assert len(entries) > 0
+    assert periods_used.max() > window / 2  # entries still happening in the second half
+    assert periods_used.min() > 1 or len(entries[entries["period"] == 1]) < len(entries)  # not all crammed into period 1
+
+
+def test_derived_pacing_is_self_correcting_after_an_idle_gap():
+    """A stretch with no eligible candidates shouldn't permanently lose
+    that budget share -- it should still mostly get spent once eligible
+    candidates reappear, not sit unused for the rest of the run."""
+    hold_days, window = 1, 30
+    budget = 20  # ~10 round trips over 30 periods
+    selector = TradeSelector(_config(trade_budget=budget, hold_days=hold_days, window_trading_days=window))
+    rows = {}
+    # First 15 periods: nothing clears the cost floor (idle gap).
+    for i in range(15):
+        rows[(f"DEAD{i}", PERIODS[i])] = (FLOOR / 2, 1)
+    # Remaining periods: abundant eligible candidates.
+    for i in range(15, window):
+        rows[(f"A{i}", PERIODS[i])] = (EDGE, 1)
+        rows[(f"B{i}", PERIODS[i])] = (EDGE / 2, 2)
+    trades = selector.run(_ranked(rows))
+    entries = _entries(trades)
+    # Budget denominator is trade_budget//2 = 10 round trips; with only 15
+    # periods left once eligibility opens up, most of that should still
+    # get spent, not stall at just 1-2 entries because the derived rate
+    # was computed once at the (idle) start and never revisited.
+    assert len(entries) >= 6
+
+
+def test_pacing_invariant_fires_on_gross_front_loading():
+    """Directly exercises _assert_pacing_invariant with contrived internal
+    state -- the actual bug found (100% of a 497-day budget consumed by
+    ~20% of the window elapsed) is exactly what this should catch."""
+    selector = TradeSelector(_config(trade_budget=100, window_trading_days=500))
+    selector._executed = 100  # 100% of budget consumed
+    with pytest.raises(RuntimeError, match="pacing invariant violated"):
+        selector._assert_pacing_invariant(period_number=100)  # only 20% of the window elapsed
+
+
+def test_pacing_invariant_does_not_fire_on_under_consumption():
+    """One-sided by design: spending SLOWER than the window elapses is a
+    legitimate, already-documented open question (was the selector too
+    conservative?), not a pacing bug -- must never trip this invariant."""
+    selector = TradeSelector(_config(trade_budget=1000, window_trading_days=100))
+    selector._executed = 5  # far under-spent
+    selector._assert_pacing_invariant(period_number=90)  # window almost over -- must not raise
+
+
 def test_max_ticker_share_pct_stops_repeated_entries_once_capped():
     # hold_days=1 + the same-day re-entry ban means AAA's fastest possible
     # cadence is every other period (enter, exit, blocked same day, re-enter)
-    # -- 3 entries in 6 periods uncapped (see the sibling test below). trade_
-    # budget=20 -> total-entries denominator = 20//2 = 10. max_ticker_share_
-    # pct=0.2 -> max(1, floor(0.2*10)) = 2, below that natural 3.
+    # -- 3 entries in 6 periods uncapped (see the sibling test below).
+    # window_trading_days=6 matches the 6 periods of data actually used --
+    # derived pacing needs a realistic budget/window ratio to not round its
+    # per-period allotment down to 0 (a huge default window like 50 against
+    # a tiny trade_budget=20 would otherwise starve every period here,
+    # unrelated to what this test is actually checking). trade_budget=20 ->
+    # total-entries denominator = 20//2 = 10. max_ticker_share_pct=0.2 ->
+    # max(1, floor(0.2*10)) = 2, below that natural 3.
     selector = TradeSelector(_config(
-        trade_budget=20, hold_days=1, top_n_per_period=5, max_ticker_share_pct=0.2,
+        trade_budget=20, hold_days=1, window_trading_days=6, top_n_per_period=5, max_ticker_share_pct=0.2,
     ))
     rows = {}
     for i in range(6):
@@ -219,7 +291,10 @@ def test_max_ticker_share_pct_stops_repeated_entries_once_capped():
 
 
 def test_max_ticker_share_pct_none_is_uncapped_by_default():
-    selector = TradeSelector(_config(trade_budget=20, hold_days=1, top_n_per_period=5))
+    # window_trading_days=6: see the sibling test above for why this needs
+    # to match the data's actual span rather than inheriting _config()'s
+    # much larger default.
+    selector = TradeSelector(_config(trade_budget=20, hold_days=1, window_trading_days=6, top_n_per_period=5))
     rows = {("AAA", PERIODS[i]): (EDGE, 1) for i in range(6)}
     trades = selector.run(_ranked(rows))
     # No default limit: AAA re-enters on its natural cadence (every other

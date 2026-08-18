@@ -127,7 +127,16 @@ class WalkForwardConfig:
 class TradingConfig:
     trade_budget: int = 200
     budget_period_weeks: int = 10
-    top_n_per_period: int = 10  # cap on trades taken per rebalance period
+    #: Optional ADDITIONAL hard ceiling on entries per period, on top of
+    #: TradeSelector's own derived pacing (remaining entry capacity /
+    #: remaining entry-eligible periods). None by default -- a fixed
+    #: ceiling here used to BE the pacing mechanism, and was found to blow
+    #: through an entire multi-year backtest's budget in the first ~100 of
+    #: 497 days once eligible candidates became abundant (see
+    #: TradeSelector._entries_allowed's docstring). Set this only to
+    #: deliberately cap entries below whatever the derived rate would
+    #: otherwise allow.
+    top_n_per_period: Optional[int] = None
 
     # Competition rules (see baseline_system_architecture.md "Competition
     # Constraints" and CLAUDE.md). Numeric defaults come from

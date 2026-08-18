@@ -36,6 +36,14 @@ from config import cost_model
 from src.config import TradingConfig
 from src.selection.portfolio_state import PortfolioState, empty_portfolio
 
+#: Generous, deliberately loose absolute-fraction gap allowed between
+#: budget-consumed and window-elapsed before _assert_pacing_invariant
+#: fires -- a coarse safety net against gross front-loading (the bug this
+#: was added for hit 80 percentage points: 100% consumed at ~20% elapsed),
+#: not a precision pacing target. Derived pacing should normally keep this
+#: far tighter in realistic configurations.
+_PACING_TOLERANCE = 0.25
+
 _EVENT_COLUMNS = [
     "ticker",
     "timestamp",
@@ -145,17 +153,49 @@ class TradeSelector:
         self._just_exited = set(due)
         return rows
 
-    def _entries_allowed(self) -> int:
+    def _entries_allowed(self, period_number: int) -> int:
         """spec §3-4: budget reserves one exit-unit per open position, and
         each new entry obligates its own future exit (2 units); capital
-        additionally caps concurrent positions via position_cap_pct."""
+        additionally caps concurrent positions via position_cap_pct.
+
+        Per-period pacing is DERIVED — remaining entry capacity divided by
+        remaining entry-eligible periods — not a fixed ceiling. A fixed
+        ``top_n_per_period`` was found (real full-sector-coverage backtest)
+        to blow through an entire multi-year run's budget in the first
+        ~100 of 497 days the moment eligible candidates became abundant
+        (as few as one sector expert blended in was enough), leaving ~19
+        months of the window completely untested — and along the way,
+        meant the selector was taking essentially every eligible candidate
+        rather than choosing among many, so the thing actually under test
+        (selection quality, not just eligibility) was never exercised.
+        This was flagged as a known divergence from the architecture doc's
+        own spec ("paces itself...") from very early in this project;
+        deriving pacing here is that deferred fix landing, not new scope.
+
+        Self-correcting: recomputed fresh every period from the CURRENT
+        remaining budget, so a period with no eligible candidates doesn't
+        lose its share — the unspent capacity stays in remaining_budget,
+        pushing the derived rate for whatever periods are left back up.
+
+        ``TradingConfig.top_n_per_period``, when explicitly set, still acts
+        as an additional hard ceiling on top of the derived rate — off
+        (None) by default, since the derived rate is now what governs
+        pacing in the realistic (non-degenerate) case.
+        """
         remaining, open_count = self.remaining_budget, self.open_positions_count
         free = max(0, remaining - open_count)
         by_budget = free // 2
 
         cap = self.config.position_cap_pct
-        by_capital = math.floor(1 / cap) - open_count if cap else self.config.top_n_per_period
-        return max(0, min(by_budget, by_capital, self.config.top_n_per_period))
+        by_capital = math.floor(1 / cap) - open_count if cap else by_budget
+
+        entry_periods_left = max(1, (self.window_trading_days - self.hold_days) - period_number + 1)
+        derived = round(by_budget / entry_periods_left)
+
+        n = min(by_budget, by_capital, derived)
+        if self.config.top_n_per_period is not None:
+            n = min(n, self.config.top_n_per_period)
+        return max(0, n)
 
     def _process_entries(self, period_number: int, timestamp, period_ranked: pd.DataFrame) -> list[dict]:
         # Entry cutoff (spec §5): a position entered here must be able to
@@ -163,7 +203,7 @@ class TradeSelector:
         if period_number > self.window_trading_days - self.hold_days:
             return []
 
-        n = min(self._entries_allowed(), len(period_ranked))
+        n = min(self._entries_allowed(period_number), len(period_ranked))
         if n <= 0:
             return []
         eligible = self._eligible(period_ranked)
@@ -240,6 +280,33 @@ class TradeSelector:
                 f"invariant violated: E({e}) + P({p}) > TRADE_BUDGET({self.config.trade_budget})"
             )
 
+    def _assert_pacing_invariant(self, period_number: int) -> None:
+        """General form of the bug that motivated derived pacing (see
+        _entries_allowed's docstring): any resource-constrained simulation
+        should track its resource consumption against elapsed time, not
+        just check it never exceeds the final ceiling. This is deliberately
+        ONE-SIDED — it only fires when budget is being consumed FASTER than
+        the window is elapsing (front-loading, the actual bug found: 100%
+        of a 497-day budget spent by day ~100). Under-consumption
+        (consumed_frac < elapsed_frac) never fires here — that's a
+        legitimate, already-documented open question (architecture doc
+        open question 7: was the selector too conservative, or correctly
+        selective), not a pacing bug, and firing on it would also make
+        this trip on any sparse/short synthetic test that never intends to
+        spend its whole budget.
+        """
+        if not self.config.trade_budget or not self.window_trading_days:
+            return
+        consumed_frac = self._executed / self.config.trade_budget
+        elapsed_frac = period_number / self.window_trading_days
+        if consumed_frac - elapsed_frac > _PACING_TOLERANCE:
+            raise RuntimeError(
+                f"pacing invariant violated at period {period_number}/{self.window_trading_days}: "
+                f"budget {consumed_frac:.1%} consumed vs window {elapsed_frac:.1%} elapsed "
+                f"(tolerance {_PACING_TOLERANCE:.0%}) -- entries are front-loading faster than "
+                f"the window is elapsing, the same failure mode derived pacing exists to prevent."
+            )
+
     def _seed_from_portfolio(self, timestamps: list) -> None:
         """Real starting holdings block re-entry for the whole run; a
         resolvable scheduled_exit_date also lets them exit naturally within
@@ -278,6 +345,7 @@ class TradeSelector:
             all_rows.extend(self._process_exits(period_number, timestamp))
             all_rows.extend(self._process_entries(period_number, timestamp, period_rows))
             self._assert_invariant()
+            self._assert_pacing_invariant(period_number)
 
         if self._open:
             # Expected only if the window's real day 50 was reached and the
