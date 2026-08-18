@@ -180,6 +180,18 @@ class OverallModel:
           if a single date has zero covered rows, and to 0.0 (no penalty,
           equivalent to ``"raw"``) only in the fully-degenerate case where
           no row in the entire frame ever has sector coverage.
+
+          KNOWN CONFOUND, registered rather than fixed: the disagreement
+          estimate comes from exactly two point estimates (broad, sector).
+          You cannot robustly estimate a spread from n=2 — this is a proxy
+          of convenience, not a real ensemble variance. A null result from
+          this mode is genuinely ambiguous between "disagreement isn't a
+          usable confidence signal" and "n=2 is too few to estimate
+          uncertainty from" — nothing here can tell those apart. The real
+          fix (a seed-ensemble of the broad model, prediction spread across
+          k seeds as the uncertainty estimate) isn't built — not worth its
+          cost until a null result on this simpler version actually
+          happens. See baseline_system_architecture.md open question 8.
         """
         out = combined.copy()
         if ranking_score == "raw":
