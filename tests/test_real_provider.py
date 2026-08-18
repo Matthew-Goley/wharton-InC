@@ -527,6 +527,122 @@ def test_earnings_features_are_nan_for_a_ticker_with_no_earnings_data(fixture_di
     assert leaver["days_to_next_earnings"].isna().all()
 
 
+# --- market-relative features (candidate, final feature family tested) -----
+# beta_60 / idio_vol_60 / market_corr_60 against a point-in-time-safe DAILY
+# market return series (cross-sectional mean of each ticker's own 1-day
+# return) -- NOT MARKET_TARGET_COLUMN, which is a forward-looking label.
+
+_MARKET_RELATIVE_COLS = ["beta_60", "idio_vol_60", "market_corr_60"]
+
+
+def test_market_relative_features_are_not_yet_promoted_features(fixture_dirs):
+    for col in _MARKET_RELATIVE_COLS:
+        assert col not in FEATURE_COLUMNS
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    for col in _MARKET_RELATIVE_COLS:
+        assert col in frame.columns
+        assert frame[col].notna().any(), f"{col} is all-NaN -- window/min_periods likely misconfigured"
+
+
+def test_internal_daily_return_columns_do_not_leak_into_the_frame(fixture_dirs):
+    """_daily_return and _market_return are consumed by
+    _add_market_relative_features and must not survive into the output --
+    they aren't features, just intermediate ingredients."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert "_daily_return" not in frame.columns
+    assert "_market_return" not in frame.columns
+
+
+def test_beta_is_one_and_idio_vol_is_zero_for_a_single_ticker_universe(fixture_dirs):
+    """With exactly one ticker, the 'market' return IS that ticker's own
+    return -- regressing a series on itself must give beta=1, zero residual
+    variance, and correlation=1. A cheap, exact sanity check on the OLS
+    variance identity before trusting the multi-ticker case."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv)
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    col = frame.xs("ALWAYS", level="ticker")[_MARKET_RELATIVE_COLS].dropna()
+    assert len(col) > 0
+    assert col["beta_60"].to_numpy() == pytest.approx(1.0, abs=1e-9)
+    assert col["idio_vol_60"].to_numpy() == pytest.approx(0.0, abs=1e-9)
+    assert col["market_corr_60"].to_numpy() == pytest.approx(1.0, abs=1e-9)
+
+
+def test_beta_and_idio_vol_match_closed_form_for_a_deterministic_relationship(tmp_path):
+    """Deliberate failing-case test (standing rule: a new diagnostic/
+    computation isn't trusted until something plausible would make it fail).
+
+    Two tickers whose returns are EXACT scalar multiples of a shared,
+    wiggly common factor: X = 2*cf, Y = 1*cf. With only these two names,
+    market_return = mean(X, Y) = 1.5*cf, so both X and Y are perfectly
+    linear in the market with zero residual -- beta and idio_vol are
+    hand-computable in closed form, and idio_vol must land at ~0, not a
+    small negative-turned-NaN from the unguarded var(stock) - beta^2*
+    var(market) subtraction (the exact failure mode the .clip(lower=0)
+    guard exists for).
+
+        beta_X = cov(X,mkt)/var(mkt) = 3*var(cf) / 2.25*var(cf) = 4/3
+        beta_Y = cov(Y,mkt)/var(mkt) = 1.5*var(cf) / 2.25*var(cf) = 2/3
+        idio_var_X = var(X) - beta_X^2*var(mkt) = 4*var(cf) - 4*var(cf) = 0
+        idio_var_Y = var(Y) - beta_Y^2*var(mkt) = var(cf) - var(cf) = 0
+        corr(X,mkt) = corr(Y,mkt) = 1.0  (positive scalar multiples)
+    """
+    data_dir = tmp_path / "training"
+    data_dir.mkdir()
+    n = 150
+    cf = 0.01 * np.sin(np.arange(n) / 5.0)  # daily-return-scale common factor, real variance
+    # cumprod (not exp(cumsum(...))) so that Close.pct_change() -- a SIMPLE
+    # return -- comes out EXACTLY k*cf at every step, not just approximately
+    # for small cf. exp(cumsum(k*cf)) gives simple returns exp(k*cf)-1,
+    # which are only proportional to first order and would make the
+    # "closed form" comparison below approximate rather than exact.
+    x_close = 100 * np.cumprod(1.0 + 2.0 * cf)
+    y_close = 100 * np.cumprod(1.0 + 1.0 * cf)
+    dates = _write_prices(data_dir, "X", x_close)
+    _write_prices(data_dir, "Y", y_close)
+
+    membership_csv = tmp_path / "m.csv"
+    pd.DataFrame(
+        [{"date": dates[0], "ticker": t, "ticker_asof": t} for t in ("X", "Y")]
+    ).to_csv(membership_csv, index=False)
+
+    provider = RealDataProvider(universe=["X", "Y"], data_dir=data_dir, membership_csv=membership_csv)
+    frame = provider.get_feature_table("2019-01-01", "2030-01-01", hold_days=5).frame
+
+    x = frame.xs("X", level="ticker")[_MARKET_RELATIVE_COLS].dropna()
+    y = frame.xs("Y", level="ticker")[_MARKET_RELATIVE_COLS].dropna()
+    assert len(x) > 0 and len(y) > 0
+
+    assert x["beta_60"].to_numpy() == pytest.approx(4.0 / 3.0, abs=1e-6)
+    assert x["idio_vol_60"].to_numpy() == pytest.approx(0.0, abs=1e-6)
+    assert x["market_corr_60"].to_numpy() == pytest.approx(1.0, abs=1e-6)
+
+    assert y["beta_60"].to_numpy() == pytest.approx(2.0 / 3.0, abs=1e-6)
+    assert y["idio_vol_60"].to_numpy() == pytest.approx(0.0, abs=1e-6)
+    assert y["market_corr_60"].to_numpy() == pytest.approx(1.0, abs=1e-6)
+
+
+def test_market_corr_is_bounded(fixture_dirs):
+    """A correlation, whatever else is true about it, cannot leave [-1, 1] --
+    a cheap invariant check on real (non-degenerate) multi-ticker data."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    corr = frame["market_corr_60"].dropna()
+    assert len(corr) > 0
+    assert corr.between(-1.0 - 1e-9, 1.0 + 1e-9).all()
+
+
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
 
 def _quiet_returns(n=400, scale=0.01, seed=0):

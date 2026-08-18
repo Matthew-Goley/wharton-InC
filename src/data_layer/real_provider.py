@@ -336,6 +336,7 @@ class RealDataProvider(DataProvider):
         # below is computed against the roster that was actually investable
         # that day, not every name on file.
         frame = self._add_sector_momentum(frame)
+        frame = self._add_market_relative_features(frame)
         frame = self._normalize_features_cross_sectionally(frame)
         frame = self._demean_target(frame)
 
@@ -518,6 +519,16 @@ class RealDataProvider(DataProvider):
                 # built.
                 "days_to_next_earnings": days_to_next_earnings,
                 "earnings_surprise": earnings_surprise,
+                # INTERNAL ONLY -- not a feature, not in FEATURE_COLUMNS,
+                # dropped by _add_market_relative_features once consumed.
+                # Exposed here (rather than recomputed cross-sectionally)
+                # so that step can build a point-in-time-safe DAILY market
+                # return series from it. Deliberately NOT
+                # MARKET_TARGET_COLUMN, which is the cross-sectional mean
+                # of the FORWARD hold_days-ahead return -- a label, not a
+                # feature ingredient; using it here would be a severe
+                # lookahead bug.
+                "_daily_return": returns,
                 TARGET_COLUMN: fwd_return,
                 "sector": self.sector_map.get(ticker, UNKNOWN_SECTOR),
             }
@@ -586,6 +597,65 @@ class RealDataProvider(DataProvider):
         # would otherwise get averaged together as if they were peers.
         loo_mean = loo_mean.where(frame["sector"] != UNKNOWN_SECTOR)
         return frame.assign(sector_momentum_60_skip_10=loo_mean)
+
+    def _add_market_relative_features(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """CANDIDATE features (not in FEATURE_COLUMNS) -- beta, idiosyncratic
+        volatility, and index correlation against a point-in-time-safe DAILY
+        market return series.
+
+        NOT the same "market series" used for target demeaning
+        (MARKET_TARGET_COLUMN, the cross-sectional mean of the FORWARD
+        hold_days-ahead return) -- that's a forward-looking label; using it
+        as a feature ingredient would be a severe lookahead bug. This
+        instead builds a SEPARATE, backward-looking daily market return: the
+        cross-sectional mean of each ticker's own 1-day return, known as of
+        the close of each trading day -- same timing as every other feature
+        in this pipeline.
+
+        beta_60 / idio_vol_60 / market_corr_60: 60-day rolling window
+        (matching the existing momentum_60_skip_10 precedent already used in
+        this project), min_periods=30 (half the window, this project's
+        general convention for requiring meaningful sample size before
+        trusting a rolling statistic).
+
+        idio_vol_60 is computed via the closed-form OLS variance identity
+        (var(stock) = beta^2 * var(market) + var(residual), exact for a
+        single-regressor OLS since the residual is orthogonal to the
+        regressor by construction) rather than an actual per-window
+        regression loop -- cheaper and numerically equivalent.
+
+        Consumes and drops the internal-only ``_daily_return`` column (see
+        _build_ticker_features) plus the ``_market_return`` column computed
+        here -- neither is a real feature, only the three named outputs are.
+        """
+        if frame.empty or "_daily_return" not in frame.columns:
+            return frame
+        out = frame.copy()
+        out["_market_return"] = out.groupby(level="timestamp")["_daily_return"].transform("mean")
+
+        window, min_periods = 60, 30
+
+        def _per_ticker(g: pd.DataFrame) -> pd.DataFrame:
+            stock = g["_daily_return"]
+            mkt = g["_market_return"]
+            cov = stock.rolling(window, min_periods=min_periods).cov(mkt)
+            var_mkt = mkt.rolling(window, min_periods=min_periods).var()
+            var_stock = stock.rolling(window, min_periods=min_periods).var()
+            beta = cov / var_mkt.replace(0, np.nan)
+            # Numerical guard: floating-point error can push this fractionally
+            # negative when idiosyncratic variance is near zero.
+            idio_var = (var_stock - beta**2 * var_mkt).clip(lower=0)
+            idio_vol = np.sqrt(idio_var)
+            corr = stock.rolling(window, min_periods=min_periods).corr(mkt)
+            return pd.DataFrame(
+                {"beta_60": beta, "idio_vol_60": idio_vol, "market_corr_60": corr},
+                index=g.index,
+            )
+
+        computed = out.groupby(level="ticker", group_keys=False).apply(_per_ticker)
+        out = out.join(computed)
+        out = out.drop(columns=["_daily_return", "_market_return"])
+        return out
 
     def _normalize_features_cross_sectionally(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Replace every feature with its cross-sectional percentile rank
