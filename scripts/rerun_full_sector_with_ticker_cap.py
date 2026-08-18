@@ -1,4 +1,19 @@
-"""Re-runs the full-sector-coverage backtest (step 3) with
+"""DEPRECATED (baseline_system_architecture.md open question 35) -- the
+frequency cap this script exists to calibrate (``max_ticker_share_pct``)
+was found redundant once ``vol_adjusted`` became the standing ranking
+default (open question 13: capping on top of vol_adjusted only takes
+PARA's rank-1 share from 3.0% to 1.7%, no return benefit) and dropped
+from the standing config. This script's entire premise -- tune and
+justify that cap -- no longer applies to the current default. Not
+deleted (the calibration work and its real, if modest, finding are still
+a legitimate part of the record), but it doesn't retrain anything (it
+only re-scores already-saved models) and isn't part of correcting the
+roster the way ``train_all_sector_experts_real.py`` is, so it's also not
+threaded with a fixed ``risk=`` for gap #5 (open questions 26/30) here --
+it still has the bare ``combiner.rank(combined)`` call. Fix that first if
+this is ever run again for a real result.
+
+Re-runs the full-sector-coverage backtest (step 3) with
 ``max_ticker_share_pct`` enabled, reusing the already-trained models from
 ``scripts/train_all_sector_experts_real.py`` -- the cap only changes
 TradeSelector's selection logic, not the experts, so no retraining is

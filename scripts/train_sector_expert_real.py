@@ -1,4 +1,21 @@
-"""Step 2 checkpoint: train ONE sector expert (Information Technology, the
+"""DEPRECATED (baseline_system_architecture.md open question 35) -- this
+checkpoint's own job (validate the training path end to end before
+committing compute to the remaining sectors) was completed once step 3
+(``scripts/train_all_sector_experts_real.py``) ran successfully; step 3
+now trains this same sector (Information Technology) as part of the full
+roster, deriving it live from ``config.EXPERTS`` rather than hand-picking
+it, so nothing here is still the unique source of anything. Not deleted
+(historical record -- this is the actual IT checkpoint referenced from
+``src/config.py``'s ``EXPERTS`` docstring and elsewhere), but do not run
+it expecting a current result: it still has gap #5's bare
+``combiner.rank(combined)`` call (open questions 26/30), deliberately left
+unfixed here rather than threaded with ``risk`` like the still-active
+scripts, since fixing a script whose job is already done just to keep it
+runnable isn't a good use of that effort. If this checkpoint's validation
+role is ever needed again (e.g. debugging a single sector in isolation
+without paying for all 10), fix the bare call first.
+
+Step 2 checkpoint: train ONE sector expert (Information Technology, the
 largest sector at 90/90 tickers with both sector and price data) and run it
 through the real OverallModel + TradeSelector + diagnostic pipeline for the
 first time with genuine ``has_sector=True`` rows.

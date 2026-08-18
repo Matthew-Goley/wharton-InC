@@ -164,7 +164,13 @@ def main() -> None:
     n_with_sector = int((combined["n_experts"] == 2).sum())
     print(f"  {n_with_sector:,} / {len(combined):,} rows ({n_with_sector/len(combined):.1%}) have a sector-expert "
           f"contribution.")
-    ranked = combiner.rank(combined)
+    # Read the standing ranking default from config rather than a bare
+    # call (baseline_system_architecture.md open questions 30/33 -- one of
+    # the four bare combiner.rank(combined) sites gap #5 named as still
+    # unfixed; fixed here the same way train_baseline.py was).
+    ranking_score = config.trading.ranking_score
+    risk = test_table.frame["volatility_20"].reindex(combined.index) if ranking_score == "vol_adjusted" else None
+    ranked = combiner.rank(combined, ranking_score=ranking_score, risk=risk)
 
     budget = int(round((200 / 50) * n_periods))
     trading_config = replace(config.trading, window_trading_days=n_periods, trade_budget=budget)
@@ -193,7 +199,14 @@ def main() -> None:
         # from the same already-fit broad_model, on the same TEST window, for
         # an apples-to-apples comparison against this run's entries.
         broad_only_combiner = OverallModel((broad_spec,))
-        broad_only_ranked = broad_only_combiner.rank(broad_only_combiner.combine({BROAD_EXPERT: expert_predictions[BROAD_EXPERT]}))
+        broad_only_combined = broad_only_combiner.combine({BROAD_EXPERT: expert_predictions[BROAD_EXPERT]})
+        broad_only_risk = (
+            test_table.frame["volatility_20"].reindex(broad_only_combined.index)
+            if ranking_score == "vol_adjusted" else None
+        )
+        broad_only_ranked = broad_only_combiner.rank(
+            broad_only_combined, ranking_score=ranking_score, risk=broad_only_risk
+        )
         broad_only_trades = TradeSelector(trading_config).run(broad_only_ranked)
         broad_only_entries = broad_only_trades[broad_only_trades["action"] == "entry"]
         diff_vs_broad = decompose_selection_change(

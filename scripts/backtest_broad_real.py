@@ -184,7 +184,14 @@ def main() -> None:
     print(f"  out-of-sample cross-sectional IC (model ranking quality alone): {oos_ic:+.4f}")
 
     combiner = OverallModel((broad_spec,))
-    ranked = combiner.rank(combiner.combine({BROAD_EXPERT: preds}))
+    combined = combiner.combine({BROAD_EXPERT: preds})
+    # Read the standing ranking default from config rather than a bare
+    # call (baseline_system_architecture.md open questions 30/33 -- this
+    # was one of the four bare combiner.rank(combined) sites gap #5 named
+    # as still unfixed; fixed here the same way train_baseline.py was).
+    ranking_score = config.trading.ranking_score
+    risk = test_table.frame["volatility_20"].reindex(combined.index) if ranking_score == "vol_adjusted" else None
+    ranked = combiner.rank(combined, ranking_score=ranking_score, risk=risk)
 
     # Match the competition's implied trading intensity (200 trades / 50
     # days = 4/day) scaled to the test window's actual length, so the
