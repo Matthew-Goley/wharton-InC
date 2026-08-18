@@ -493,3 +493,84 @@ def test_backtest_mode_is_unaffected_by_the_live_mode_force_close_change():
     selector.run(_ranked(rows))  # today=None -- backtest mode, unchanged
     assert selector.open_positions_count == 0
     assert any(entry["ticker"] == "AAA" for entry in selector.force_close_log)
+
+
+# --- days_to_next_earnings eligibility filter --------------------------------
+# Event-risk control, not a return predictor (settled in baseline_system_
+# architecture.md open question 24, before this was built): exclude an
+# entry whose next known earnings announcement falls inside the hold
+# window.
+
+def _dte(rows: dict) -> pd.Series:
+    """rows: {(ticker, timestamp): days_to_next_earnings}"""
+    index = pd.MultiIndex.from_tuples(rows.keys(), names=["ticker", "timestamp"])
+    return pd.Series(rows.values(), index=index)
+
+
+def test_days_to_next_earnings_excludes_an_entry_inside_the_hold_window():
+    hold_days = 5
+    rows = {("SAFE", PERIODS[0]): (EDGE, 1), ("RISKY", PERIODS[0]): (EDGE, 2)}
+    dte = _dte({("SAFE", PERIODS[0]): 10, ("RISKY", PERIODS[0]): 3})  # RISKY: earnings in 3 days, inside a 5-day hold
+    selector = TradeSelector(
+        _config(hold_days=hold_days, top_n_per_period=5), days_to_next_earnings=dte,
+    )
+    trades = selector.run(_ranked(rows))
+    entered = set(_entries(trades).index.get_level_values("ticker"))
+    assert entered == {"SAFE"}
+
+
+def test_days_to_next_earnings_allows_an_entry_after_the_hold_window():
+    """Positive counterpart -- the filter isn't accidentally blocking
+    everything with a known earnings date, only ones inside the window."""
+    hold_days = 5
+    rows = {("SAFE", PERIODS[0]): (EDGE, 1)}
+    dte = _dte({("SAFE", PERIODS[0]): 6})  # earnings in 6 days, outside a 5-day hold
+    selector = TradeSelector(
+        _config(hold_days=hold_days, top_n_per_period=5), days_to_next_earnings=dte,
+    )
+    trades = selector.run(_ranked(rows))
+    assert len(_entries(trades)) == 1
+
+
+def test_days_to_next_earnings_boundary_exactly_hold_days_is_excluded():
+    """Deliberate boundary check on <= vs <: a position entered day d and
+    exited day d+hold_days is still open through that exit day's own
+    session, so an announcement exactly hold_days away is still inside
+    the exposure window, not outside it."""
+    hold_days = 5
+    rows = {("EDGE_CASE", PERIODS[0]): (EDGE, 1)}
+    dte = _dte({("EDGE_CASE", PERIODS[0]): hold_days})  # exactly on the boundary
+    selector = TradeSelector(
+        _config(hold_days=hold_days, top_n_per_period=5), days_to_next_earnings=dte,
+    )
+    trades = selector.run(_ranked(rows))
+    assert len(_entries(trades)) == 0
+
+
+def test_days_to_next_earnings_missing_value_does_not_exclude():
+    """Deliberate failing-case check, the actual policy decision: NaN (no
+    resolvable next-earnings date -- no earnings data for this ticker at
+    all, or past the known calendar's range) must NOT be excluded.
+    Unknown isn't risky, it's unknown -- excluding it would silently
+    block the ~8% delisted/acquired population from ever being entered,
+    for a reason unrelated to actual event risk."""
+    hold_days = 5
+    rows = {("NO_DATA", PERIODS[0]): (EDGE, 1)}
+    dte = _dte({("NO_DATA", PERIODS[0]): float("nan")})
+    selector = TradeSelector(
+        _config(hold_days=hold_days, top_n_per_period=5), days_to_next_earnings=dte,
+    )
+    trades = selector.run(_ranked(rows))
+    assert len(_entries(trades)) == 1
+
+
+def test_days_to_next_earnings_filter_is_off_by_default():
+    """days_to_next_earnings=None (every existing test in this file) must
+    behave exactly as before this feature existed -- no filtering at all,
+    even for a ticker that WOULD have been excluded had the series been
+    supplied."""
+    hold_days = 5
+    rows = {("WOULD_BE_RISKY", PERIODS[0]): (EDGE, 1)}
+    selector = TradeSelector(_config(hold_days=hold_days, top_n_per_period=5))  # no days_to_next_earnings
+    trades = selector.run(_ranked(rows))
+    assert len(_entries(trades)) == 1

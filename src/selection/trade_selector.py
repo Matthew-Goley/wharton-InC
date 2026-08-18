@@ -74,11 +74,23 @@ class TradeSelector:
         config: TradingConfig,
         portfolio: PortfolioState | None = None,
         trades_executed_so_far: int = 0,
+        days_to_next_earnings: Optional[pd.Series] = None,
     ):
         self.config = config
         self.portfolio = portfolio if portfolio is not None else empty_portfolio()
         self.hold_days = config.hold_days
         self.window_trading_days = config.window_trading_days
+        #: (ticker, timestamp)-indexed, e.g. table.frame["days_to_next_
+        #: earnings"] (RealDataProvider._earnings_features_for_ticker) --
+        #: kept as a SEPARATE aligned series rather than baked into
+        #: `ranked`, the same pattern OverallModel.rank(risk=...) already
+        #: uses for volatility_20. Not a ranking feature (tested and
+        #: nulled for that, baseline_system_architecture.md open question
+        #: 24) -- an EVENT-RISK eligibility control, settled two rounds
+        #: before this was built: excludes an entry only when an
+        #: announcement is KNOWN to fall inside the hold window, see
+        #: _eligible.
+        self.days_to_next_earnings = days_to_next_earnings
         #: E: entries + exits executed so far. 0 by default (every
         #: existing backtest call site unchanged) -- a live run seeds
         #: this from PortfolioState.trades_executed_so_far
@@ -122,7 +134,8 @@ class TradeSelector:
 
     def _eligible(self, period_ranked: pd.DataFrame) -> pd.DataFrame:
         """Rows it's legal to enter: long-only, cost-clearing, not already
-        open, not exited this same period (spec §6 same-day re-entry ban)."""
+        open, not exited this same period (spec §6 same-day re-entry ban),
+        no known earnings announcement inside the hold window."""
         eligible = period_ranked
         if not self.config.allow_short:
             eligible = eligible[eligible["combined_score"] > 0]
@@ -131,6 +144,34 @@ class TradeSelector:
         # exit is already mechanically committed, not a second decision.
         cost_floor = self.config.min_edge_margin * cost_model.round_trip_cost_fraction()
         eligible = eligible[eligible["combined_score"].abs() > cost_floor]
+
+        if self.days_to_next_earnings is not None and not eligible.empty:
+            # Event-risk control, not a return predictor -- settled two
+            # rounds before this was built (days_to_next_earnings was
+            # tested and nulled as a RANKING feature, baseline_system_
+            # architecture.md open question 24; its "more natural role...
+            # eligibility control" was the explicit conclusion there).
+            # Excludes an entry whose next known announcement falls on or
+            # before the day it would exit (<=, not < -- a position
+            # entered day d and exited day d+hold_days is still open
+            # through that exit day's own session, so an announcement
+            # exactly on the exit day is still inside the exposure
+            # window, not outside it).
+            #
+            # NaN (no resolvable next-earnings date -- no earnings data
+            # for this ticker at all, e.g. the ~8% delisted/acquired
+            # population, or past the known calendar's range) is
+            # deliberately NOT excluded. Unknown isn't risky, it's
+            # unknown -- treating every unmapped ticker as ineligible
+            # would silently block ~8% of the universe from ever being
+            # entered, for a reason unrelated to actual event risk. A
+            # different missingness convention than vol_adjusted's own
+            # fillna(max) (that's a RANKING penalty, where "assume the
+            # worst" is safe; this is a hard ELIGIBILITY gate, where the
+            # same assumption would be a severe, disproportionate cost).
+            dte = self.days_to_next_earnings.reindex(eligible.index)
+            earnings_in_window = dte.notna() & (dte <= self.hold_days)
+            eligible = eligible[~earnings_in_window]
 
         if eligible.empty:
             return eligible
