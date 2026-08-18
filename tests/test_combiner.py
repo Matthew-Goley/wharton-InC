@@ -88,7 +88,11 @@ def test_rank_orders_within_timestamp_independently():
         ),
         "tech": _preds({}),
     }
-    ranked = model.rank(model.combine(predictions))
+    # Explicit "raw" -- this test is about rank()'s per-timestamp grouping
+    # in general, not about ranking_score; rank()'s own resolved default
+    # is "vol_adjusted" (TradingConfig.ranking_score), which needs a
+    # `risk` series this test doesn't supply.
+    ranked = model.rank(model.combine(predictions), ranking_score="raw")
     assert ranked.loc[("BBB", T0), "rank"] == 1
     assert ranked.loc[("AAA", T0), "rank"] == 2
     assert ranked.loc[("AAA", t1), "rank"] == 1
@@ -135,8 +139,8 @@ def test_vol_adjusted_ranking_demotes_high_vol_large_prediction():
     risk = pd.Series({("LOUD", T0): 0.20, ("CALM", T0): 0.01})
     risk.index.names = ["ticker", "timestamp"]
 
-    raw_ranked = model.rank(combined)
-    assert raw_ranked.loc[("LOUD", T0), "rank"] == 1  # bigger raw prediction wins by default
+    raw_ranked = model.rank(combined, ranking_score="raw")
+    assert raw_ranked.loc[("LOUD", T0), "rank"] == 1  # bigger raw prediction wins under "raw"
 
     vol_ranked = model.rank(combined, ranking_score="vol_adjusted", risk=risk)
     assert vol_ranked.loc[("CALM", T0), "rank"] == 1  # demoted once divided by its own volatility
@@ -153,6 +157,53 @@ def test_vol_adjusted_ranking_requires_risk():
     combined = model.combine({"broad": _preds({("AAA", T0): (0.05, 0.9)})})
     with pytest.raises(ValueError, match="requires a `risk`"):
         model.rank(combined, ranking_score="vol_adjusted")
+
+
+# --- rank()'s default resolves from TradingConfig, not a hardcoded literal
+# (baseline_system_architecture.md open question 33: gap #5's actual fix) --
+
+def test_bare_rank_call_resolves_to_the_declared_standing_default():
+    """Deliberate failing-case check on the fix itself: a truly bare call
+    (no ranking_score, no risk) must raise vol_adjusted's own "requires
+    risk" error, not silently succeed under "raw" -- proof the default
+    genuinely resolved to TradingConfig.ranking_score ("vol_adjusted"),
+    not that this is a no-op signature change. If TradingConfig.
+    ranking_score is ever changed back to "raw", this test would need
+    updating too -- it enforces "the default IS whatever config
+    declares", not the literal string "vol_adjusted" per se."""
+    from src.config import TradingConfig
+    assert TradingConfig.ranking_score == "vol_adjusted"  # the premise this test depends on
+    model = OverallModel((BROAD,))
+    combined = model.combine({"broad": _preds({("AAA", T0): (0.05, 0.9)})})
+    with pytest.raises(ValueError, match="requires a `risk`"):
+        model.rank(combined)  # no ranking_score, no risk -- bare, exactly like the 5 real call sites
+
+
+def test_bare_rank_call_with_risk_actually_computes_vol_adjusted():
+    """The positive counterpart: supply risk and nothing else, confirm the
+    OUTPUT is genuinely vol-adjusted (score / risk), not raw combined_score
+    -- a behavioral proof, not just "it didn't raise"."""
+    model = OverallModel((BROAD,))
+    predictions = {"broad": _preds({("LOUD", T0): (0.10, 0.9), ("CALM", T0): (0.02, 0.9)})}
+    combined = model.combine(predictions)
+    risk = pd.Series({("LOUD", T0): 0.20, ("CALM", T0): 0.01})
+    risk.index.names = ["ticker", "timestamp"]
+
+    bare_ranked = model.rank(combined, risk=risk)  # no ranking_score -- must behave like "vol_adjusted"
+    explicit_ranked = model.rank(combined, ranking_score="vol_adjusted", risk=risk)
+    pd.testing.assert_series_equal(bare_ranked["ranking_score"], explicit_ranked["ranking_score"])
+    assert bare_ranked.loc[("CALM", T0), "rank"] == 1  # demoted LOUD, same as the explicit-mode test above
+
+
+def test_explicit_ranking_score_still_overrides_the_default():
+    """A caller that explicitly wants "raw" (or any other mode) must still
+    be able to say so -- the default changing doesn't remove the ability
+    to opt out of it."""
+    model = OverallModel((BROAD,))
+    predictions = {"broad": _preds({("LOUD", T0): (0.10, 0.9), ("CALM", T0): (0.02, 0.9)})}
+    combined = model.combine(predictions)
+    ranked = model.rank(combined, ranking_score="raw")
+    assert ranked.loc[("LOUD", T0), "rank"] == 1  # bigger raw prediction wins, vol_adjusted would have demoted it
 
 
 def test_uncertainty_adjusted_demotes_high_disagreement():
@@ -202,7 +253,7 @@ def test_uncertainty_adjusted_penalizes_uncovered_ticker_not_promotes_it():
         "tech": _preds({("COVERED", T0): (0.052, 0.5), ("NOISY", T0): (0.09, 0.5)}),  # no UNCOVERED row
     }
     combined = model.combine(predictions)
-    raw_ranked = model.rank(combined)
+    raw_ranked = model.rank(combined, ranking_score="raw")
     assert raw_ranked.loc[("UNCOVERED", T0), "rank"] == 1  # wins on raw score alone
 
     ranked = model.rank(combined, ranking_score="uncertainty_adjusted")
@@ -261,7 +312,10 @@ def test_broad_only_with_zero_sector_experts_configured():
     model = OverallModel((BROAD,))
     predictions = {"broad": _preds({("AAA", T0): (0.05, 0.9), ("BBB", T0): (-0.02, 0.5)})}
     combined = model.combine(predictions)
-    ranked = model.rank(combined)
+    # Explicit "raw" -- this test is about combine()'s zero-sector-experts
+    # join behavior, not ranking_score; rank() is only used to get a rank
+    # column for the assertions below.
+    ranked = model.rank(combined, ranking_score="raw")
 
     assert combined.loc[("AAA", T0), "combined_score"] == pytest.approx(0.05)
     assert combined.loc[("AAA", T0), "n_experts"] == 1

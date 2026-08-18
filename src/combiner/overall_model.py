@@ -6,7 +6,7 @@ from typing import Literal, Optional
 import numpy as np
 import pandas as pd
 
-from src.config import BROAD_EXPERT, ExpertSpec
+from src.config import BROAD_EXPERT, ExpertSpec, TradingConfig
 
 #: Below this, a risk denominator is treated as unreliable-small rather than
 #: divided by, so a near-zero volatility reading can't produce a runaway score.
@@ -126,12 +126,42 @@ class OverallModel:
     @staticmethod
     def rank(
         combined: pd.DataFrame,
-        ranking_score: Literal["raw", "vol_adjusted", "uncertainty_adjusted"] = "raw",
+        ranking_score: Optional[Literal["raw", "vol_adjusted", "uncertainty_adjusted"]] = None,
         risk: Optional[pd.Series] = None,
         risk_floor: float = _DEFAULT_RISK_FLOOR,
         uncertainty_penalty: float = _DEFAULT_UNCERTAINTY_PENALTY,
     ) -> pd.DataFrame:
         """Add a per-timestamp ``rank`` column (1 = best score).
+
+        ``ranking_score`` defaults to ``None``, which resolves to
+        ``TradingConfig.ranking_score`` (the project's declared standing
+        default, open question 13 — currently ``"vol_adjusted"``) AT CALL
+        TIME, not a hardcoded literal on this signature. This is the actual
+        fix for gap #5 (open questions 26 and 30): five independent bare
+        ``combiner.rank(combined)`` call sites were found across this
+        project, each silently ranking by whatever this default happened
+        to be; only one (``train_baseline.py``) had been fixed by reading
+        config explicitly at its own call site. Every one of the five now
+        inherits the correct behavior automatically, without being edited
+        individually, because there is only one place ``"vol_adjusted"``
+        is actually written down (``TradingConfig``) rather than one place
+        the standing decision lives and a second, separate place a
+        function signature's default has to be kept in sync with it by
+        hand. ``assert_config_consistency`` (open question 31) becomes a
+        backstop against a caller explicitly passing the WRONG value, not
+        the only thing standing between a bare call and this bug.
+
+        A consequence worth stating plainly, not hidden: ``"vol_adjusted"``
+        (the resolved default now) requires ``risk`` — a bare call that
+        doesn't supply one no longer silently ranks by the wrong mode, it
+        raises immediately (see the ``"vol_adjusted"`` branch below). The
+        four ad hoc backtest scripts named in open question 30 that still
+        call ``combiner.rank(combined)`` with no ``risk`` argument will hit
+        that error on their next real run rather than a successful-but-
+        wrong result — loud failure instead of silent drift, but each is
+        still a real, unfixed call site that needs updating (pull
+        ``risk = table.frame["volatility_20"]``, the same fix
+        ``train_baseline.py`` already got) before it runs again.
 
         ``ranking_score`` selects what gets *sorted* — it never touches
         ``combined_score`` itself, which stays in real return units for
@@ -139,7 +169,7 @@ class OverallModel:
         A risk-adjusted ratio isn't comparable to a fixed % cost threshold,
         so ranking and eligibility deliberately read two different columns:
 
-        - ``"raw"`` (default): rank by ``combined_score`` directly.
+        - ``"raw"``: rank by ``combined_score`` directly.
         - ``"vol_adjusted"``: rank by ``combined_score / risk``. Diagnosed
           on the real backtest: taking the argmax of predicted return
           across ~580 tickers a day disproportionately promotes whichever
@@ -193,6 +223,8 @@ class OverallModel:
           cost until a null result on this simpler version actually
           happens. See baseline_system_architecture.md open question 8.
         """
+        if ranking_score is None:
+            ranking_score = TradingConfig.ranking_score
         out = combined.copy()
         if ranking_score == "raw":
             score = out["combined_score"]
