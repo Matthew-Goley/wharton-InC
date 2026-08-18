@@ -68,15 +68,31 @@ MEMBERSHIP_CSV = REPO_ROOT / "data" / "processed" / "sp500_membership.csv"
 EARNINGS_DATES_CACHE = REPO_ROOT / "data" / "raw" / "reference" / "earnings_dates_raw.csv"
 
 
-def _load_earnings_tickers() -> frozenset[str]:
-    """Tickers with at least one real (non-null) earnings_date in the
-    cached fetch (src.data_pipeline.fetch_earnings_dates). Empty if that
-    fetch hasn't run yet -- has_earnings_data is then just 0 for every
-    ticker, not an error; nothing here depends on the fetch having run."""
+def _load_earnings_events() -> dict[str, pd.DataFrame]:
+    """ticker -> sorted DataFrame(earnings_date, surprise_pct) of real
+    earnings events from the cached fetch (src.data_pipeline.
+    fetch_earnings_dates). Empty dict if that fetch hasn't run yet --
+    every earnings-keyed feature is then just NaN/0 for every ticker, not
+    an error.
+
+    earnings_date is parsed by slicing the first 10 characters of the raw
+    "YYYY-MM-DD HH:MM:SS+-HH:MM" string, NOT via pd.to_datetime(...,
+    utc=True). Checked empirically before picking this: converting to UTC
+    first shifts the calendar date for evening announcements that cross
+    the UTC day boundary -- 460 of ~51,700 real rows in the actual cached
+    fetch differ between the two methods. The string slice preserves the
+    LOCAL (Eastern) calendar date exactly as yfinance reported it, with no
+    timezone arithmetic at all.
+    """
     if not EARNINGS_DATES_CACHE.exists():
-        return frozenset()
-    df = pd.read_csv(EARNINGS_DATES_CACHE, parse_dates=["earnings_date"])
-    return frozenset(df.dropna(subset=["earnings_date"])["ticker"].unique())
+        return {}
+    df = pd.read_csv(EARNINGS_DATES_CACHE)
+    df["earnings_date"] = pd.to_datetime(df["earnings_date"].astype(str).str[:10], errors="coerce")
+    df = df.dropna(subset=["earnings_date"])
+    events: dict[str, pd.DataFrame] = {}
+    for ticker, group in df.groupby("ticker"):
+        events[ticker] = group[["earnings_date", "surprise_pct"]].sort_values("earnings_date").reset_index(drop=True)
+    return events
 
 #: One or two representatives per documented cross-sectional effect. The set
 #: is fixed by *concept*, chosen from the literature before scoring anything —
@@ -212,7 +228,7 @@ class RealDataProvider(DataProvider):
         demean_target: bool = True,
         normalize_features: bool = False,
         sector_map: Optional[dict[str, str]] = None,
-        earnings_tickers: Optional[frozenset[str]] = None,
+        earnings_events: Optional[dict[str, pd.DataFrame]] = None,
     ):
         #: ticker -> sector, defaulting to the real generated map. Injectable
         #: (matching universe/data_dir/membership_csv's existing pattern) so
@@ -223,11 +239,15 @@ class RealDataProvider(DataProvider):
             from config.sector_map import SECTOR_MAP  # local import: avoid a hard dependency at module load
             sector_map = SECTOR_MAP
         self.sector_map = sector_map
-        #: Tickers with real earnings-date data (src.data_pipeline.
-        #: fetch_earnings_dates), defaulting to the real cache. Injectable
-        #: for the same reason sector_map is -- see has_earnings_data's own
-        #: note below for what this feeds and why it's tested alone first.
-        self.earnings_tickers = _load_earnings_tickers() if earnings_tickers is None else earnings_tickers
+        #: ticker -> sorted DataFrame(earnings_date, surprise_pct), defaulting
+        #: to the real cache (src.data_pipeline.fetch_earnings_dates).
+        #: Injectable for the same reason sector_map is. Feeds three
+        #: candidate features: has_earnings_data (a pure missingness
+        #: indicator, tested alone first as a leakage gate -- open question
+        #: 22), days_to_next_earnings, and earnings_surprise (see
+        #: _earnings_features_for_ticker for the point-in-time contract
+        #: each one has to satisfy).
+        self.earnings_events = _load_earnings_events() if earnings_events is None else earnings_events
         #: When True (the default) the label is excess return over that date's
         #: universe mean. See _demean_target for what that changes downstream.
         self.demean_target = demean_target
@@ -326,6 +346,62 @@ class RealDataProvider(DataProvider):
             target_horizon_days=hold_days,
         )
 
+    def _earnings_features_for_ticker(
+        self, ticker: str, dates: pd.DatetimeIndex
+    ) -> tuple[pd.Series, pd.Series]:
+        """days_to_next_earnings and earnings_surprise for one ticker's
+        price dates -- CANDIDATE features (not in FEATURE_COLUMNS), via
+        two asymmetric as-of joins against that ticker's known earnings
+        events, each with a deliberately different point-in-time contract:
+
+        - days_to_next_earnings: FORWARD as-of, same-day match ALLOWED --
+          the next scheduled earnings date on or after this row's date.
+          Not a lookahead: announcement dates are public knowledge well
+          in advance of the event itself, so knowing "today is earnings
+          day" as of today is legitimate -- the calendar fact was already
+          known before today arrived. Also usable downstream as an
+          event-risk flag (heightened volatility/gap risk), not just a
+          return predictor, when this falls inside the hold_days window.
+        - earnings_surprise: BACKWARD as-of, same-day match FORBIDDEN
+          (allow_exact_matches=False) -- the most recent PRIOR earnings
+          event's surprise. THE highest-risk lookahead surface in this
+          feature set: forbidding the same-day match means a row can
+          never see its own event's outcome, only a strictly earlier one,
+          regardless of whether that day's announcement happened before
+          or after market hours. See
+          test_earnings_surprise_is_not_visible_before_its_own_
+          announcement_date (tests/test_real_provider.py) for the
+          explicit, deliberately adversarial regression test.
+
+        NaN/NaT (not zero) for a ticker with no earnings data at all, or
+        for dates outside the known earnings calendar's range (before the
+        first known event, or after the last one on file) -- the same
+        "unknown, not zero" convention as every other feature here.
+        """
+        events = self.earnings_events.get(ticker)
+        if events is None or events.empty:
+            nan = pd.Series(np.nan, index=dates)
+            return nan.copy(), nan.copy()
+
+        # merge_asof requires sorted keys -- `dates` comes from close.index,
+        # already sorted ascending by raw.sort_index() upstream.
+        left = pd.DataFrame({"timestamp": dates})
+        next_event = pd.merge_asof(
+            left, events[["earnings_date"]], left_on="timestamp", right_on="earnings_date",
+            direction="forward", allow_exact_matches=True,
+        )
+        days_to_next = (next_event["earnings_date"] - next_event["timestamp"]).dt.days
+        days_to_next.index = dates
+
+        prior_event = pd.merge_asof(
+            left, events, left_on="timestamp", right_on="earnings_date",
+            direction="backward", allow_exact_matches=False,
+        )
+        surprise = prior_event["surprise_pct"]
+        surprise.index = dates
+
+        return surprise, days_to_next
+
     def _build_ticker_features(self, ticker: str, path: Path, hold_days: int) -> Optional[pd.DataFrame]:
         raw = pd.read_csv(path, index_col="timestamp", parse_dates=["timestamp"]).sort_index()
         if len(raw) < _MIN_TICKER_ROWS:
@@ -335,6 +411,7 @@ class RealDataProvider(DataProvider):
         close = raw["Close"]
         volume = raw["Volume"]
         returns = close.pct_change()
+        earnings_surprise, days_to_next_earnings = self._earnings_features_for_ticker(ticker, close.index)
         ma_20 = close.rolling(20, min_periods=1).mean()
         #: CANDIDATE feature ingredients (not in FEATURE_COLUMNS) -- see
         #: px_to_ma_10's own note below FEATURE_COLUMNS for the horizon-
@@ -430,7 +507,17 @@ class RealDataProvider(DataProvider):
                 # itself, with no real earnings content attached, so any
                 # later "earnings surprise moved IC" result can be told
                 # apart from "missingness alone moved IC."
-                "has_earnings_data": 1.0 if ticker in self.earnings_tickers else 0.0,
+                "has_earnings_data": (
+                    1.0 if ticker in self.earnings_events and not self.earnings_events[ticker].empty else 0.0
+                ),
+                # CANDIDATE features (not in FEATURE_COLUMNS) -- see
+                # _earnings_features_for_ticker for the point-in-time
+                # contract each one has to satisfy, and open question 22
+                # (baseline_system_architecture.md) for the leakage-gate
+                # test has_earnings_data (above) passed before these were
+                # built.
+                "days_to_next_earnings": days_to_next_earnings,
+                "earnings_surprise": earnings_surprise,
                 TARGET_COLUMN: fwd_return,
                 "sector": self.sector_map.get(ticker, UNKNOWN_SECTOR),
             }

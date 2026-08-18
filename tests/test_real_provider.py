@@ -420,12 +420,18 @@ def test_momentum_10_skip_2_is_not_yet_a_promoted_feature(fixture_dirs):
 
 # --- has_earnings_data (candidate leakage-gate feature, open question 22) --
 
+def _earnings_events_for(ticker: str, dates: list, surprises: list) -> dict:
+    return {ticker: pd.DataFrame({
+        "earnings_date": [pd.Timestamp(d) for d in dates], "surprise_pct": surprises,
+    })}
+
+
 def test_has_earnings_data_is_not_yet_a_promoted_feature(fixture_dirs):
     assert "has_earnings_data" not in FEATURE_COLUMNS
     data_dir, membership_csv = fixture_dirs
     provider = RealDataProvider(
         universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
-        earnings_tickers=frozenset({"ALWAYS"}),
+        earnings_events=_earnings_events_for("ALWAYS", ["2020-02-03"], [10.0]),
     )
     frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
     assert "has_earnings_data" in frame.columns
@@ -438,7 +444,7 @@ def test_has_earnings_data_is_1_for_covered_tickers_0_for_others(fixture_dirs):
     data_dir, membership_csv = fixture_dirs
     provider = RealDataProvider(
         universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
-        earnings_tickers=frozenset({"ALWAYS"}),  # only ALWAYS "has" earnings data
+        earnings_events=_earnings_events_for("ALWAYS", ["2020-02-03"], [10.0]),  # only ALWAYS "has" data
     )
     frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
     always_vals = frame.xs("ALWAYS", level="ticker")["has_earnings_data"]
@@ -448,13 +454,77 @@ def test_has_earnings_data_is_1_for_covered_tickers_0_for_others(fixture_dirs):
     assert not always_vals.isna().any() and not leaver_vals.isna().any()
 
 
-def test_has_earnings_data_defaults_to_empty_when_fetch_has_not_run(tmp_path, monkeypatch):
+def test_earnings_data_defaults_to_empty_when_fetch_has_not_run(tmp_path, monkeypatch):
     """Before src.data_pipeline.fetch_earnings_dates has ever run, the real
     cache file doesn't exist -- must default to "nobody has earnings data"
-    (0.0 for everyone), not crash."""
+    (empty dict), not crash."""
     import src.data_layer.real_provider as rp
     monkeypatch.setattr(rp, "EARNINGS_DATES_CACHE", tmp_path / "does_not_exist.csv")
-    assert rp._load_earnings_tickers() == frozenset()
+    assert rp._load_earnings_events() == {}
+
+
+# --- days_to_next_earnings / earnings_surprise (candidate features) --------
+
+def test_days_and_surprise_are_not_yet_promoted_features(fixture_dirs):
+    assert "days_to_next_earnings" not in FEATURE_COLUMNS
+    assert "earnings_surprise" not in FEATURE_COLUMNS
+
+
+def test_earnings_surprise_is_not_visible_before_its_own_announcement_date(fixture_dirs):
+    """THE regression test for the highest-risk lookahead surface in the
+    feature set. Two known events for ALWAYS: 2020-02-03 (surprise=10.0)
+    and 2020-05-01 (surprise=-20.0). A naive as-of join that ALLOWS
+    same-day matches would leak each event's own surprise on its own
+    announcement date -- this asserts that does NOT happen."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv,
+        earnings_events=_earnings_events_for("ALWAYS", ["2020-02-03", "2020-05-01"], [10.0, -20.0]),
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    s = frame.xs("ALWAYS", level="ticker")["earnings_surprise"]
+
+    assert pd.isna(s.loc[pd.Timestamp("2020-01-31")])  # strictly before the first event: no prior surprise yet
+    # THE adversarial assertion: ON the first event's own date, the
+    # surprise must NOT yet be visible -- a buggy allow_exact_matches=True
+    # implementation would leak 10.0 here instead of NaN.
+    assert pd.isna(s.loc[pd.Timestamp("2020-02-03")])
+    assert s.loc[pd.Timestamp("2020-02-04")] == pytest.approx(10.0)  # visible starting the next trading day
+    assert s.loc[pd.Timestamp("2020-03-16")] == pytest.approx(10.0)  # still the most recent prior event
+    # ON the second event's own date: still the FIRST event's surprise,
+    # not the second's -- same adversarial check, second occurrence.
+    assert s.loc[pd.Timestamp("2020-05-01")] == pytest.approx(10.0)
+    assert s.loc[pd.Timestamp("2020-05-04")] == pytest.approx(-20.0)  # visible starting the next trading day
+
+
+def test_days_to_next_earnings_allows_same_day_and_counts_down(fixture_dirs):
+    """Not a lookahead risk the way earnings_surprise is -- the calendar
+    date itself is public knowledge in advance, so same-day (0 days) is a
+    legitimate value, and NaN once the known calendar runs out."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv,
+        earnings_events=_earnings_events_for("ALWAYS", ["2020-02-03", "2020-05-01"], [10.0, -20.0]),
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    d = frame.xs("ALWAYS", level="ticker")["days_to_next_earnings"]
+
+    assert d.loc[pd.Timestamp("2020-01-31")] == 3  # Jan 31 -> Feb 3
+    assert d.loc[pd.Timestamp("2020-02-03")] == 0  # same-day IS allowed here
+    assert d.loc[pd.Timestamp("2020-02-04")] == (pd.Timestamp("2020-05-01") - pd.Timestamp("2020-02-04")).days
+    assert pd.isna(d.loc[pd.Timestamp("2020-06-01")])  # past the last known event -- no further date on file
+
+
+def test_earnings_features_are_nan_for_a_ticker_with_no_earnings_data(fixture_dirs):
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER"], data_dir=data_dir, membership_csv=membership_csv,
+        earnings_events=_earnings_events_for("ALWAYS", ["2020-02-03"], [10.0]),  # LEAVER gets nothing
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    leaver = frame.xs("LEAVER", level="ticker")
+    assert leaver["earnings_surprise"].isna().all()
+    assert leaver["days_to_next_earnings"].isna().all()
 
 
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
