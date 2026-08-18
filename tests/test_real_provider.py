@@ -143,6 +143,66 @@ def test_every_kept_row_is_a_member_under_the_in_force_observation(fixture_dirs)
     )
 
 
+# --- apply_point_in_time_filter=False (live-scoring mode) ------------------
+# The S&P 500 point-in-time filter is a TRAINING-universe concept -- it has
+# no relationship to Wharton's approved list (config/stock_list.py), which
+# was never part of the S&P 500's history. A live-scoring RealDataProvider
+# must be able to skip it entirely, without needing sp500_membership.csv to
+# exist at all.
+
+def test_point_in_time_filter_is_on_by_default(fixture_dirs):
+    """Sanity check the flag's default matches every pre-existing test above
+    -- if this ever flips, every test in this file up to here silently stops
+    testing what it says it tests."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+    )
+    assert provider.apply_point_in_time_filter is True
+
+
+def test_apply_point_in_time_filter_false_keeps_a_departed_tickers_rows(fixture_dirs):
+    """With the filter off, LEAVER's rows must survive past 2020-05-01 (its
+    real S&P departure date in the fixture) -- the opposite of
+    test_drops_rows_after_a_ticker_leaves, and the direct behavioral proof
+    the flag does what it says, not just that it doesn't crash."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        apply_point_in_time_filter=False,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    leaver_dates = frame.xs("LEAVER", level="ticker").index
+    assert leaver_dates.max() >= pd.Timestamp("2020-05-01")
+
+
+def test_apply_point_in_time_filter_false_does_not_require_membership_csv(tmp_path, fixture_dirs):
+    """A live-scoring provider has no reason to need sp500_membership.csv on
+    disk at all -- confirm construction and scoring both succeed when it
+    plainly doesn't exist, not just that the filter is skipped once loaded."""
+    data_dir, _ = fixture_dirs
+    missing_csv = tmp_path / "does_not_exist.csv"
+    assert not missing_csv.exists()
+    provider = RealDataProvider(
+        universe=["ALWAYS"], data_dir=data_dir, membership_csv=missing_csv,
+        apply_point_in_time_filter=False,
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert not frame.empty
+
+
+def test_apply_point_in_time_filter_true_still_requires_membership_csv(tmp_path, fixture_dirs):
+    """Deliberate failing-case counterpart to the test above: with the flag
+    at its default (True), a missing membership file must still fail loudly
+    -- proves the guard genuinely gates the load, rather than the previous
+    test passing for an unrelated reason (e.g. the file being optional
+    all along)."""
+    data_dir, _ = fixture_dirs
+    missing_csv = tmp_path / "does_not_exist.csv"
+    with pytest.raises(FileNotFoundError):
+        RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=missing_csv)
+
+
 def test_features_come_from_close_not_adj_close(fixture_dirs):
     data_dir, membership_csv = fixture_dirs
     provider = RealDataProvider(

@@ -40,7 +40,14 @@ Two correctness rules taken directly from the wharton-InC README's
 - Point-in-time universe: each ticker's rows are filtered to dates it was
   actually an S&P 500 member (an as-of join against
   ``data/processed/sp500_membership.csv``), so training doesn't apply
-  today's roster backward across history (survivorship bias).
+  today's roster backward across history (survivorship bias). This is a
+  TRAINING-universe concept only -- it says nothing about Wharton's
+  approved list, which was never part of the S&P 500's history to begin
+  with. Live scoring must construct this provider with
+  ``apply_point_in_time_filter=False`` (also skips loading
+  ``sp500_membership.csv`` entirely -- a live-scoring run has no reason to
+  need that file on disk), not feed it a small ``universe`` and expect the
+  filter to pass everything through by accident.
 
 Sector comes from ``config/sector_map.py`` (``SECTOR_MAP``, ticker -> GICS-
 normalized sector name, built by ``src.data_pipeline.fetch_sector_map`` from
@@ -229,6 +236,7 @@ class RealDataProvider(DataProvider):
         normalize_features: bool = False,
         sector_map: Optional[dict[str, str]] = None,
         earnings_events: Optional[dict[str, pd.DataFrame]] = None,
+        apply_point_in_time_filter: bool = True,
     ):
         #: ticker -> sector, defaulting to the real generated map. Injectable
         #: (matching universe/data_dir/membership_csv's existing pattern) so
@@ -291,12 +299,30 @@ class RealDataProvider(DataProvider):
         self.universe = universe
         self.data_dir = Path(data_dir)
         self.membership_csv = Path(membership_csv)
-        self._membership = self._load_membership()
-        #: Sorted observation dates — the dates the membership file actually
-        #: records. Used to resolve an arbitrary date to the roster in force.
-        self._observation_dates = np.sort(self._membership["date"].unique())
-        #: Exact (date, ticker) membership pairs, for O(1) lookup.
-        self._member_index = pd.MultiIndex.from_frame(self._membership[["date", "ticker"]])
+        #: When True (the default), get_feature_table applies
+        #: _filter_point_in_time (S&P 500 point-in-time membership) --
+        #: correct, and required, for training on the historical universe
+        #: (avoids survivorship bias). Set False for LIVE scoring against
+        #: config/stock_list.py (Wharton's approved list): that list has no
+        #: relationship to S&P 500 membership at all, so the filter isn't
+        #: "off by default and rarely needed" there, it's simply the wrong
+        #: question to ask of today's approved-list roster. Guards the
+        #: membership-file load too (below), not just the filter call in
+        #: get_feature_table -- a live-scoring provider has no reason to
+        #: require sp500_membership.csv to even exist on disk.
+        self.apply_point_in_time_filter = apply_point_in_time_filter
+        if self.apply_point_in_time_filter:
+            self._membership = self._load_membership()
+            #: Sorted observation dates — the dates the membership file
+            #: actually records. Used to resolve an arbitrary date to the
+            #: roster in force.
+            self._observation_dates = np.sort(self._membership["date"].unique())
+            #: Exact (date, ticker) membership pairs, for O(1) lookup.
+            self._member_index = pd.MultiIndex.from_frame(self._membership[["date", "ticker"]])
+        else:
+            self._membership = None
+            self._observation_dates = np.array([], dtype="datetime64[ns]")
+            self._member_index = pd.MultiIndex.from_arrays([[], []], names=["date", "ticker"])
         #: Populated by the most recent get_feature_table() call — tickers
         #: whose price file was missing (delisted, acquired, no successor;
         #: see wharton-InC README "Gotchas" — ~8% of the universe by design).
@@ -330,11 +356,17 @@ class RealDataProvider(DataProvider):
         frame = pd.concat(rows)
         timestamps = frame.index.get_level_values("timestamp")
         frame = frame[(timestamps >= start_ts) & (timestamps <= end_ts)]
-        frame = self._filter_point_in_time(frame)
+        if self.apply_point_in_time_filter:
+            frame = self._filter_point_in_time(frame)
         frame = frame.sort_index()
-        # After the point-in-time filter, so every cross-sectional operation
-        # below is computed against the roster that was actually investable
-        # that day, not every name on file.
+        # After the point-in-time filter (when applied), so every
+        # cross-sectional operation below is computed against the roster
+        # that was actually investable that day, not every name on file.
+        # For a live-scoring provider (apply_point_in_time_filter=False)
+        # every row on file for the requested window is investable by
+        # construction -- it's already Wharton's approved list, not the
+        # broad training universe -- so skipping the filter is correct,
+        # not a shortcut.
         frame = self._add_sector_momentum(frame)
         frame = self._add_market_relative_features(frame)
         frame = self._normalize_features_cross_sectionally(frame)
