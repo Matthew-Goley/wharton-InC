@@ -9,10 +9,20 @@ each other.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from config import cost_model, hold_period
 from src.data_layer.interface import FeatureTable
+
+if TYPE_CHECKING:
+    # Type-checking only, deliberately -- src.config is meant to be a
+    # foundational module other layers (experts, combiner, pipeline)
+    # import FROM, not the reverse (see this module's own docstring). A
+    # real runtime import here would invert that. assert_config_
+    # consistency's `artifact` parameter only ever duck-types against
+    # ExpertBundle's three fields (models/hold_days/feature_columns), so
+    # no runtime dependency is actually needed.
+    from src.experts.base import ExpertBundle
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +242,7 @@ def assert_config_consistency(
     table: Optional[FeatureTable] = None,
     used_ranking_score: Optional[str] = None,
     trained_expert_names: Optional[set[str]] = None,
+    artifact: Optional["ExpertBundle"] = None,
 ) -> None:
     """Check EFFECTIVE inputs against DECLARED config, across every axis
     this project has already been burned by at least once. Each check only
@@ -268,7 +279,39 @@ def assert_config_consistency(
       omissions (a sector that silently failed to train). Symmetric
       difference reported both ways, not just "sets don't match", so the
       failure mode is legible without a second investigation.
+    - ``artifact``: an ``src.experts.base.ExpertBundle`` loaded from disk
+      (``load_experts``) -- validates a SAVED artifact wholesale in one
+      call (open question 36), the thing a bare pickle of weights could
+      never support. Checks its ``hold_days`` against
+      ``config.trading.hold_days`` (a model trained on one label horizon,
+      loaded under a config declaring a different one, is a real and
+      serious correctness bug -- the same class of check as the ``table``
+      one above, just for a persisted artifact instead of a freshly-built
+      FeatureTable) and, if ``table`` is also supplied, its
+      ``feature_columns`` against ``table.feature_columns`` (as sets --
+      order isn't itself a drift signal, content is). Also seeds
+      ``trained_expert_names`` from ``artifact.models`` if that wasn't
+      separately supplied, so the roster check above runs for free rather
+      than needing to be duplicated.
     """
+    if artifact is not None:
+        if trained_expert_names is None:
+            trained_expert_names = set(artifact.models)
+        if artifact.hold_days != config.trading.hold_days:
+            raise ConfigConsistencyError(
+                f"artifact label horizon mismatch: this artifact was trained with hold_days="
+                f"{artifact.hold_days} (saved_at={artifact.saved_at!r}) but config.trading."
+                f"hold_days={config.trading.hold_days} -- predicting with it now would use a "
+                f"model fit on the wrong-horizon label for the selector's current exit rule."
+            )
+        if table is not None and set(artifact.feature_columns) != set(table.feature_columns):
+            extra = set(artifact.feature_columns) - set(table.feature_columns)
+            missing = set(table.feature_columns) - set(artifact.feature_columns)
+            raise ConfigConsistencyError(
+                f"artifact feature_columns mismatch: extra (in the artifact, not the current "
+                f"feature table): {sorted(extra) or 'none'}. missing (in the current feature "
+                f"table, not the artifact): {sorted(missing) or 'none'}."
+            )
     if table is not None:
         if table.target_horizon_days != config.trading.hold_days:
             raise ConfigConsistencyError(

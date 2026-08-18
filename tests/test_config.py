@@ -151,3 +151,61 @@ def test_raises_on_a_missing_declared_expert_not_actually_trained():
     config = _config_with_experts(BROAD_EXPERT, "tech", "financials")
     with pytest.raises(ConfigConsistencyError, match="missing"):
         assert_config_consistency(config, trained_expert_names={BROAD_EXPERT, "tech"})
+
+
+# --- artifact=: validating a loaded ExpertBundle wholesale (open question 36) -
+
+def _bundle(*, models: dict, hold_days: int, feature_columns: tuple[str, ...]):
+    from src.experts.base import ExpertBundle
+    return ExpertBundle(models=models, hold_days=hold_days, feature_columns=feature_columns, saved_at="2026-08-19T00:00:00+00:00")
+
+
+def test_artifact_passes_when_everything_matches():
+    config = _config_with_experts(BROAD_EXPERT, "tech")
+    bundle = _bundle(models={BROAD_EXPERT: None, "tech": None}, hold_days=5, feature_columns=("f1", "f2"))
+    config = replace(config, trading=replace(config.trading, hold_days=5))
+    assert_config_consistency(config, artifact=bundle)  # must not raise
+
+
+def test_artifact_seeds_the_roster_check_from_its_own_models():
+    """The direct regression test for the stale-materials-key finding,
+    reproduced through the artifact= path specifically: no need to
+    separately pass trained_expert_names -- artifact.models' own keys are
+    enough to catch it."""
+    config = _config_with_experts(BROAD_EXPERT, "tech")
+    config = replace(config, trading=replace(config.trading, hold_days=5))
+    bundle = _bundle(
+        models={BROAD_EXPERT: None, "tech": None, "materials": None}, hold_days=5, feature_columns=("f1",)
+    )
+    with pytest.raises(ConfigConsistencyError, match="extra"):
+        assert_config_consistency(config, artifact=bundle)
+
+
+def test_artifact_raises_on_a_label_horizon_mismatch():
+    """A model trained on one hold_days, loaded under a config declaring a
+    different one -- predicting with it would use the wrong-horizon
+    label."""
+    config = _config_with_experts(BROAD_EXPERT)
+    config = replace(config, trading=replace(config.trading, hold_days=5))
+    bundle = _bundle(models={BROAD_EXPERT: None}, hold_days=10, feature_columns=("f1",))
+    with pytest.raises(ConfigConsistencyError, match="label horizon"):
+        assert_config_consistency(config, artifact=bundle)
+
+
+def test_artifact_raises_on_a_feature_columns_mismatch_against_the_table():
+    config = _config_with_experts(BROAD_EXPERT)
+    config = replace(config, trading=replace(config.trading, hold_days=5))
+    bundle = _bundle(models={BROAD_EXPERT: None}, hold_days=5, feature_columns=("f1", "f2"))
+    table = _table(5)  # feature_columns=["f1"] -- see _table's definition above
+    with pytest.raises(ConfigConsistencyError, match="feature_columns mismatch"):
+        assert_config_consistency(config, artifact=bundle, table=table)
+
+
+def test_artifact_feature_columns_check_is_skipped_without_a_table():
+    """No table supplied -- can't check feature_columns, so it silently
+    isn't checked (matches every other axis's "only checked if its input
+    is supplied" convention), not a spurious failure."""
+    config = _config_with_experts(BROAD_EXPERT)
+    config = replace(config, trading=replace(config.trading, hold_days=5))
+    bundle = _bundle(models={BROAD_EXPERT: None}, hold_days=5, feature_columns=("totally", "different", "columns"))
+    assert_config_consistency(config, artifact=bundle)  # must not raise
