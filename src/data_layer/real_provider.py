@@ -237,6 +237,7 @@ class RealDataProvider(DataProvider):
         sector_map: Optional[dict[str, str]] = None,
         earnings_events: Optional[dict[str, pd.DataFrame]] = None,
         apply_point_in_time_filter: bool = True,
+        require_labeled_rows: bool = True,
     ):
         #: ticker -> sector, defaulting to the real generated map. Injectable
         #: (matching universe/data_dir/membership_csv's existing pattern) so
@@ -323,6 +324,28 @@ class RealDataProvider(DataProvider):
             self._membership = None
             self._observation_dates = np.array([], dtype="datetime64[ns]")
             self._member_index = pd.MultiIndex.from_arrays([[], []], names=["date", "ticker"])
+        #: When True (the default), every returned row must have a
+        #: realized TARGET_COLUMN -- the last hold_days rows of each
+        #: ticker's series (whose forward return hasn't happened yet) are
+        #: dropped, same as always. TRAINING semantics: a row with no
+        #: label is useless for fitting, byte-for-byte the same behavior
+        #: this had before this flag existed.
+        #:
+        #: Set False for LIVE SCORING: score_live.py's entire reason for
+        #: existing is to predict on exactly the rows a strict
+        #: label-requirement would delete -- "today" can never have a
+        #: realized 5-day-forward return, by definition, so demanding one
+        #: makes get_feature_table structurally unable to return today's
+        #: row at all (baseline_system_architecture.md open question 28).
+        #:
+        #: Deliberately NOT a blanket "keep every unlabeled row" -- only
+        #: rows chronologically PAST a ticker's own last row with a real
+        #: label are kept unlabeled; a NaN target appearing anywhere
+        #: earlier (a genuine data gap -- e.g. a missing Close price
+        #: propagating through pct_change, not "hasn't happened yet") is
+        #: still dropped, identically to training mode. See
+        #: _build_ticker_features for where this split is actually drawn.
+        self.require_labeled_rows = require_labeled_rows
         #: Populated by the most recent get_feature_table() call — tickers
         #: whose price file was missing (delisted, acquired, no successor;
         #: see wharton-InC README "Gotchas" — ~8% of the universe by design).
@@ -568,9 +591,29 @@ class RealDataProvider(DataProvider):
         # A zero denominator anywhere above yields +/-inf, which XGBoost would
         # treat as a real extreme rather than a gap. NaN is the honest encoding.
         df = df.replace([np.inf, -np.inf], np.nan)
-        # The last hold_days rows have no realized forward return yet — not
-        # a feature gap to fill, a label that genuinely doesn't exist.
-        df = df.dropna(subset=[TARGET_COLUMN])
+        if self.require_labeled_rows:
+            # TRAINING (default): every row needs a real label. The last
+            # hold_days rows have no realized forward return yet -- not a
+            # feature gap to fill, a label that genuinely doesn't exist.
+            # Unchanged from before require_labeled_rows existed.
+            df = df.dropna(subset=[TARGET_COLUMN])
+        else:
+            # LIVE SCORING: split rows needing a label (dropped, same rule
+            # as training) from rows needing only features (kept, even
+            # unlabeled) at the ticker's own last labeled row -- not a
+            # blanket "keep every NaN-target row". A NaN target at or
+            # before that point is a genuine data gap (e.g. a missing
+            # Close price propagating through pct_change), which training
+            # would also have dropped; only the rows strictly AFTER it --
+            # structurally unable to have a label yet, "today" foremost
+            # among them -- are exempted.
+            labeled = df[TARGET_COLUMN].notna()
+            if labeled.any():
+                last_labeled_date = df.index[labeled].max()
+                df = df[labeled | (df.index > last_labeled_date)]
+            # else: no labeled row anywhere in this ticker's history (e.g.
+            # a brand-new listing with under hold_days of data) -- nothing
+            # to drop, every row is "past the last complete label" trivially.
         if df.empty:
             return None
         df.index = pd.MultiIndex.from_product([[ticker], df.index], names=["ticker", "timestamp"])

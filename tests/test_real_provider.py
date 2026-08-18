@@ -203,6 +203,95 @@ def test_apply_point_in_time_filter_true_still_requires_membership_csv(tmp_path,
         RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=missing_csv)
 
 
+# --- require_labeled_rows=False (live-mode scoring) -------------------------
+# The target-dropna gap found while verifying seam 1 (baseline_system_
+# architecture.md open question 28): _build_ticker_features unconditionally
+# dropped any row without a realized TARGET_COLUMN, which always includes
+# "today" -- its hold_days-ahead forward return can't exist yet, by
+# definition. Splits rows needing a label (training) from rows needing only
+# features (scoring) at each ticker's own last labeled row, not a blanket
+# skip -- see the docstring on RealDataProvider.require_labeled_rows.
+
+def test_require_labeled_rows_is_true_by_default(fixture_dirs):
+    """Sanity check the flag's default -- if this ever flips, every test in
+    this file relying on the training-mode dropna silently stops testing
+    what it says it tests."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv)
+    assert provider.require_labeled_rows is True
+
+
+def test_require_labeled_rows_false_keeps_the_most_recent_date_training_still_drops_it(fixture_dirs):
+    """The literal deliberate failing-case check: same data, same window,
+    only require_labeled_rows differs -- training mode must still drop the
+    most recent date (no realized label yet); live mode must keep it, all
+    the way through the last row actually on file, with real features and
+    a genuinely NaN (not fabricated) target."""
+    data_dir, membership_csv = fixture_dirs
+
+    def _table(require_labeled_rows: bool) -> pd.DataFrame:
+        provider = RealDataProvider(
+            universe=["ALWAYS"], data_dir=data_dir, membership_csv=membership_csv,
+            require_labeled_rows=require_labeled_rows,
+        )
+        return provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame.xs(
+            "ALWAYS", level="ticker"
+        )
+
+    training_frame = _table(require_labeled_rows=True)
+    live_frame = _table(require_labeled_rows=False)
+
+    raw = pd.read_csv(data_dir / "ALWAYS_1d.csv", index_col="timestamp", parse_dates=["timestamp"])
+    assert live_frame.index.max() == raw.index.max()  # live mode reaches the last row on file
+    assert training_frame.index.max() < live_frame.index.max()  # training mode still drops it
+
+    last_row = live_frame.loc[live_frame.index.max()]
+    assert pd.isna(last_row[TARGET_COLUMN])  # genuinely unlabeled, not something else keeping it
+    assert last_row[FEATURE_COLUMNS].notna().all()  # but real, usable features -- this row IS useful
+
+
+def test_require_labeled_rows_false_still_drops_a_genuine_mid_series_gap(tmp_path):
+    """The precision this design deliberately draws, proven, not assumed:
+    NOT a blanket 'keep every unlabeled row'. A NaN target caused by a
+    genuine data gap (a missing Close price mid-series, propagating
+    through pct_change) is NOT 'hasn't happened yet' -- there ARE later
+    rows with a real label -- so it must still be dropped even in live
+    mode, identically to training mode."""
+    data_dir = tmp_path / "training"
+    data_dir.mkdir()
+    n = 200  # comfortably above _MIN_TICKER_ROWS (123) so GAPPY isn't skipped outright
+    dates = pd.bdate_range("2020-01-01", periods=n)
+    close = 100 + np.arange(n) * 0.1 + np.sin(np.arange(n) / 4) * 2
+    close = close.astype(float)
+    gap_idx = 150  # well before the end -- plenty of real labeled rows survive after it
+    close[gap_idx] = np.nan  # a genuine mid-series data gap, not a tail row
+    pd.DataFrame(
+        {
+            "timestamp": dates, "Open": close - 0.5, "High": close + 1.0, "Low": close - 1.0,
+            "Close": close, "Adj Close": close, "Volume": 1_000_000 * (1 + 0.1 * np.sin(np.arange(n) / 3)),
+        }
+    ).to_csv(data_dir / "GAPPY_1d.csv", index=False)
+
+    membership_csv = tmp_path / "m.csv"
+    pd.DataFrame([{"date": dates[0], "ticker": "GAPPY", "ticker_asof": "GAPPY"}]).to_csv(membership_csv, index=False)
+
+    hold_days = 5
+    provider = RealDataProvider(
+        universe=["GAPPY"], data_dir=data_dir, membership_csv=membership_csv, require_labeled_rows=False,
+    )
+    frame = provider.get_feature_table("2020-01-01", "2020-12-31", hold_days=hold_days).frame.xs(
+        "GAPPY", level="ticker"
+    )
+    # The row hold_days before the gap has its forward return corrupted by
+    # the missing Close hold_days ahead -- a genuine gap, not a tail row
+    # (real labeled rows exist both before AND after it in this series).
+    gap_caused_date = dates[gap_idx - hold_days]
+    assert gap_caused_date not in frame.index
+    # But the true tail (past the last real label) IS still kept, proving
+    # this isn't accidentally dropping everything near the gap.
+    assert frame.index.max() == dates[-1]
+
+
 def test_features_come_from_close_not_adj_close(fixture_dirs):
     data_dir, membership_csv = fixture_dirs
     provider = RealDataProvider(
