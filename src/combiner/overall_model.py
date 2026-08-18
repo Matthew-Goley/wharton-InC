@@ -12,6 +12,12 @@ from src.config import BROAD_EXPERT, ExpertSpec
 #: divided by, so a near-zero volatility reading can't produce a runaway score.
 _DEFAULT_RISK_FLOOR = 0.005
 
+#: Multiplier on disagreement in "uncertainty_adjusted" ranking's lower-
+#: confidence-bound: score - uncertainty_penalty * uncertainty. 1.0 is the
+#: simplest reading (penalize by the full disagreement magnitude, same
+#: units as combined_score) -- not tuned, a starting point.
+_DEFAULT_UNCERTAINTY_PENALTY = 1.0
+
 _JOIN_COLUMNS = ["broad_return", "broad_confidence", "sector_return", "sector_confidence", "sector_expert"]
 
 
@@ -120,9 +126,10 @@ class OverallModel:
     @staticmethod
     def rank(
         combined: pd.DataFrame,
-        ranking_score: Literal["raw", "vol_adjusted"] = "raw",
+        ranking_score: Literal["raw", "vol_adjusted", "uncertainty_adjusted"] = "raw",
         risk: Optional[pd.Series] = None,
         risk_floor: float = _DEFAULT_RISK_FLOOR,
+        uncertainty_penalty: float = _DEFAULT_UNCERTAINTY_PENALTY,
     ) -> pd.DataFrame:
         """Add a per-timestamp ``rank`` column (1 = best score).
 
@@ -145,16 +152,34 @@ class OverallModel:
           — a series shaped like the ``volatility_20`` feature, aligned to
           the same (ticker, timestamp) index.
 
-        A third mode belongs in this same slot once it's buildable:
-        ranking by a lower-confidence-bound derived from broad/sector-
-        expert *disagreement* addresses a second, distinct effect that
-        vol-adjustment structurally can't reach — the argmax of many noisy
-        estimates is upward-biased by selection alone, even under
-        homoskedastic noise, independent of volatility. That needs a
-        second opinion to detect (ensemble disagreement as an uncertainty
-        estimate), which needs sector experts to exist. Not implemented;
-        tracked as an ablation row ("Selection score") in
-        baseline_system_architecture.md.
+        - ``"uncertainty_adjusted"``: rank by ``combined_score -
+          uncertainty_penalty * uncertainty``, where ``uncertainty =
+          |broad_return - sector_return|`` — a lower-confidence-bound that
+          addresses a second, distinct effect vol-adjustment structurally
+          can't reach: the argmax of many noisy estimates is upward-biased
+          by selection alone, even under homoskedastic noise, independent
+          of volatility. Detecting that needs a second, independent
+          opinion (ensemble disagreement as an uncertainty estimate), not
+          a better volatility estimate.
+
+          THE TRAP THIS MODE HAS TO HANDLE DELIBERATELY: a ticker with no
+          sector expert (``n_experts == 1``) has no disagreement to
+          measure at all. Defaulting that to zero uncertainty would read
+          "no second opinion" as "maximally confident" and *promote*
+          uncovered tickers — backwards, and it silently breaks any
+          ablation that toggles sector coverage (a ticker flips between
+          "has an uncertainty estimate" and "doesn't" across arms, making
+          them incomparable unless the uncovered case is defined the same
+          way every time). Handled here: an uncovered row's uncertainty is
+          filled with *that date's* maximum observed disagreement among
+          covered rows — the worst empirically-observed case that day, not
+          zero — so missing coverage is penalized, never rewarded. Same
+          shape as ``vol_adjusted``'s own missing-data handling (fill with
+          the max, not zero, so an unknown quantity reads as bad-case, not
+          good-case). Falls back to the global max across the whole frame
+          if a single date has zero covered rows, and to 0.0 (no penalty,
+          equivalent to ``"raw"``) only in the fully-degenerate case where
+          no row in the entire frame ever has sector coverage.
         """
         out = combined.copy()
         if ranking_score == "raw":
@@ -165,8 +190,20 @@ class OverallModel:
             denom = risk.reindex(out.index)
             denom = denom.fillna(denom.max()).clip(lower=risk_floor)
             score = out["combined_score"] / denom
+        elif ranking_score == "uncertainty_adjusted":
+            # NaN wherever sector_return is NaN (n_experts == 1) -- exactly
+            # the rows needing the deliberate fill below.
+            disagreement = (out["broad_return"] - out["sector_return"]).abs()
+            per_date_max = disagreement.groupby(level="timestamp").transform("max")
+            global_max = disagreement.max()
+            fill_value = per_date_max.fillna(global_max).fillna(0.0)
+            uncertainty = disagreement.fillna(fill_value)
+            score = out["combined_score"] - uncertainty_penalty * uncertainty
         else:
-            raise ValueError(f"unknown ranking_score {ranking_score!r} (expected 'raw' or 'vol_adjusted')")
+            raise ValueError(
+                f"unknown ranking_score {ranking_score!r} "
+                "(expected 'raw', 'vol_adjusted', or 'uncertainty_adjusted')"
+            )
 
         out["ranking_score"] = score
         out["rank"] = (

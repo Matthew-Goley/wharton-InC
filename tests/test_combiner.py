@@ -155,6 +155,97 @@ def test_vol_adjusted_ranking_requires_risk():
         model.rank(combined, ranking_score="vol_adjusted")
 
 
+def test_uncertainty_adjusted_demotes_high_disagreement():
+    """Two covered tickers with the same raw combined_score, but one has
+    broad/sector experts agreeing closely and the other disagreeing a
+    lot -- the low-disagreement one should rank higher once penalized."""
+    model = OverallModel((BROAD, TECH), agreement_bonus=0.0)  # bonus off: isolate the disagreement effect
+    predictions = {
+        "broad": _preds({("AGREE", T0): (0.05, 0.5), ("DISAGREE", T0): (0.05, 0.5)}),
+        "tech": _preds({("AGREE", T0): (0.052, 0.5), ("DISAGREE", T0): (0.09, 0.5)}),
+    }
+    combined = model.combine(predictions)
+    # Both have the same weighted-average combined_score by construction? Not
+    # required -- what matters is disagreement, not identical combined_score.
+    ranked = model.rank(combined, ranking_score="uncertainty_adjusted")
+    assert ranked.loc[("AGREE", T0), "rank"] == 1
+    disagree_uncertainty = abs(0.05 - 0.09)
+    agree_uncertainty = abs(0.05 - 0.052)
+    assert ranked.loc[("DISAGREE", T0), "ranking_score"] == pytest.approx(
+        combined.loc[("DISAGREE", T0), "combined_score"] - disagree_uncertainty
+    )
+    assert ranked.loc[("AGREE", T0), "ranking_score"] == pytest.approx(
+        combined.loc[("AGREE", T0), "combined_score"] - agree_uncertainty
+    )
+
+
+def test_uncertainty_adjusted_penalizes_uncovered_ticker_not_promotes_it():
+    """The trap this mode has to avoid: a ticker with no sector expert has
+    no disagreement to measure. Defaulting that to zero uncertainty would
+    make 'no second opinion' read as 'maximally confident' and promote it
+    over a covered ticker with a smaller but well-agreed-upon prediction.
+
+    Three tickers, so the fill value (that date's MAX covered disagreement)
+    differs from any one covered ticker's own disagreement -- a uniform
+    penalty can't flip a ranking, so this needs a real spread to prove the
+    mechanism does anything:
+      - UNCOVERED: no tech prediction at all, raw score 0.06 -- the single
+        largest raw score in the batch, would win outright under 'raw'.
+      - COVERED: broad/tech agree closely (disagreement 0.002) -- small
+        combined_score, but should barely be penalized.
+      - NOISY: broad/tech disagree a lot (disagreement 0.06) -- sets that
+        date's max, which UNCOVERED must inherit as its own penalty.
+    """
+    model = OverallModel((BROAD, TECH), agreement_bonus=0.0)
+    predictions = {
+        "broad": _preds({("UNCOVERED", T0): (0.06, 0.5), ("COVERED", T0): (0.05, 0.5), ("NOISY", T0): (0.03, 0.5)}),
+        "tech": _preds({("COVERED", T0): (0.052, 0.5), ("NOISY", T0): (0.09, 0.5)}),  # no UNCOVERED row
+    }
+    combined = model.combine(predictions)
+    raw_ranked = model.rank(combined)
+    assert raw_ranked.loc[("UNCOVERED", T0), "rank"] == 1  # wins on raw score alone
+
+    ranked = model.rank(combined, ranking_score="uncertainty_adjusted")
+    # UNCOVERED's fill uncertainty must equal that date's MAX observed
+    # disagreement among covered rows -- NOISY's 0.06, not COVERED's 0.002
+    # and not zero.
+    max_disagreement = abs(0.03 - 0.09)
+    assert max_disagreement == pytest.approx(0.06)
+    assert ranked.loc[("UNCOVERED", T0), "ranking_score"] == pytest.approx(0.06 - max_disagreement)
+    # With the correct (large) fill applied, UNCOVERED's advantage is wiped
+    # out and COVERED -- barely penalized for its own small, real
+    # disagreement -- must now outrank it.
+    assert ranked.loc[("COVERED", T0), "rank"] == 1
+    assert ranked.loc[("UNCOVERED", T0), "rank"] > 1
+
+
+def test_uncertainty_adjusted_falls_back_to_global_max_for_a_fully_uncovered_date():
+    """A date with zero covered rows has no per-date max to fill from --
+    must fall back to the global max across the whole frame, not 0 or NaN."""
+    model = OverallModel((BROAD, TECH), agreement_bonus=0.0)
+    t1 = pd.Timestamp("2020-01-02")
+    predictions = {
+        "broad": _preds({("AAA", T0): (0.05, 0.5), ("BBB", t1): (0.05, 0.5)}),
+        "tech": _preds({("AAA", T0): (0.09, 0.5)}),  # only T0 has any coverage; t1 is fully uncovered
+    }
+    combined = model.combine(predictions)
+    ranked = model.rank(combined, ranking_score="uncertainty_adjusted")
+    global_max_disagreement = abs(0.05 - 0.09)
+    assert ranked.loc[("BBB", t1), "ranking_score"] == pytest.approx(0.05 - global_max_disagreement)
+
+
+def test_uncertainty_adjusted_degenerates_to_no_penalty_with_zero_coverage_anywhere():
+    """No sector expert ever matches anything in this frame -- there's no
+    max disagreement to fall back to at all. Must not crash or produce
+    NaN; penalty is 0 (equivalent to 'raw') in this fully-degenerate case."""
+    model = OverallModel((BROAD,))
+    combined = model.combine({"broad": _preds({("AAA", T0): (0.05, 0.9), ("BBB", T0): (0.02, 0.9)})})
+    ranked = model.rank(combined, ranking_score="uncertainty_adjusted")
+    assert ranked.loc[("AAA", T0), "ranking_score"] == pytest.approx(0.05)
+    assert ranked.loc[("BBB", T0), "ranking_score"] == pytest.approx(0.02)
+    assert ranked.loc[("AAA", T0), "rank"] == 1
+
+
 def test_unknown_ranking_score_rejected():
     model = OverallModel((BROAD,))
     combined = model.combine({"broad": _preds({("AAA", T0): (0.05, 0.9)})})
