@@ -36,17 +36,28 @@ class ExpertSpec:
 #:
 #: Sector strings must match ``config.sector_map.SECTOR_MAP``'s GICS-
 #: normalized values exactly (a mismatch silently trains on zero rows rather
-#: than erroring, since ``ExpertData.slice_for`` is a plain filter). Only
-#: three of the map's eleven sectors are wired up here so far — the plan is
-#: to validate the training path end to end on one sector expert first
-#: (Information Technology, the largest at 90 tickers) before committing to
-#: the rest; see scripts/train_sector_expert_real.py. This default roster
-#: stays a placeholder until that validates.
+#: than erroring, since ``ExpertData.slice_for`` is a plain filter). All
+#: eleven of the map's sectors are wired up here (validated end to end on
+#: Information Technology alone first — see scripts/train_sector_expert_real.py
+#: and its checkpoint result, data/processed/backtest_sector_it_real.json —
+#: including a real bug found and fixed there: OverallModel's agreement
+#: bonus was additive in raw-return units and dominated real predictions;
+#: now multiplicative). The ~70 universe tickers with no resolved sector
+#: (config/sector_map.py) stay broad-only, same as before this roster
+#: existed — nothing downstream needs to special-case them.
 EXPERTS: tuple[ExpertSpec, ...] = (
     ExpertSpec(name=BROAD_EXPERT, sector=None),
     ExpertSpec(name="tech", sector="Information Technology"),
+    ExpertSpec(name="industrials", sector="Industrials"),
     ExpertSpec(name="financials", sector="Financials"),
+    ExpertSpec(name="consumer_discretionary", sector="Consumer Discretionary"),
+    ExpertSpec(name="health_care", sector="Health Care"),
+    ExpertSpec(name="consumer_staples", sector="Consumer Staples"),
     ExpertSpec(name="real_estate", sector="Real Estate"),
+    ExpertSpec(name="utilities", sector="Utilities"),
+    ExpertSpec(name="energy", sector="Energy"),
+    ExpertSpec(name="communication_services", sector="Communication Services"),
+    ExpertSpec(name="materials", sector="Materials"),
 )
 
 
