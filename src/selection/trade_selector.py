@@ -69,12 +69,23 @@ class OpenPosition:
 
 
 class TradeSelector:
-    def __init__(self, config: TradingConfig, portfolio: PortfolioState | None = None):
+    def __init__(
+        self,
+        config: TradingConfig,
+        portfolio: PortfolioState | None = None,
+        trades_executed_so_far: int = 0,
+    ):
         self.config = config
         self.portfolio = portfolio if portfolio is not None else empty_portfolio()
         self.hold_days = config.hold_days
         self.window_trading_days = config.window_trading_days
-        self._executed = 0  # E: entries + exits executed so far
+        #: E: entries + exits executed so far. 0 by default (every
+        #: existing backtest call site unchanged) -- a live run seeds
+        #: this from PortfolioState.trades_executed_so_far
+        #: (src.selection.portfolio_state's trade_log), since a single
+        #: day's ranked frame passed to run() carries no memory of trades
+        #: already made earlier this season (open question 27).
+        self._executed = trades_executed_so_far
         self._open: dict[str, OpenPosition] = {}
         self._just_exited: set[str] = set()
         self.force_close_log: list[dict] = []
@@ -144,7 +155,22 @@ class TradeSelector:
     # -- per-period mechanics ---------------------------------------------
 
     def _process_exits(self, period_number: int, timestamp) -> list[dict]:
-        due = [ticker for ticker, pos in self._open.items() if pos.scheduled_exit_period == period_number]
+        # <=, not == : exact equality is the wrong tool for "has a
+        # monotonically-increasing counter reached or passed a
+        # threshold" in general -- a real, latent bug in this function on
+        # its own (open question 27), independent of whether live mode
+        # exists. It happened to never matter before because the only
+        # caller (a full-window backtest) always walks every period in
+        # contiguous order, so == and <= could never actually disagree.
+        # A live run breaks that assumption: it can be skipped on the
+        # exact day a position was due out (the team doesn't run the
+        # script that day), and under == that exit would then silently
+        # never fire on any LATER run either, since period_number has
+        # already moved past it. <= fires it as soon as a run catches up.
+        due = [
+            ticker for ticker, pos in self._open.items()
+            if pos.scheduled_exit_period is not None and pos.scheduled_exit_period <= period_number
+        ]
         rows = []
         for ticker in due:
             position = self._open.pop(ticker)
@@ -233,9 +259,17 @@ class TradeSelector:
             )
         return rows
 
-    def _force_close_remaining(self, period_number: int, timestamp, reason: str) -> list[dict]:
+    def _force_close_remaining(
+        self, period_number: int, timestamp, reason: str, tickers: Optional[list[str]] = None
+    ) -> list[dict]:
+        """Force-close ``tickers`` (default: everything currently open --
+        every existing call site's unchanged behavior). A live-mode run
+        end (open question 27) passes a narrower subset -- only positions
+        with no resolvable scheduled_exit_period -- rather than closing
+        every genuinely-still-pending position just because today's
+        single-day call ended."""
         rows = []
-        for ticker in list(self._open.keys()):
+        for ticker in list(tickers) if tickers is not None else list(self._open.keys()):
             position = self._open.pop(ticker)
             self._executed += 1
             self.force_close_log.append(
@@ -307,18 +341,49 @@ class TradeSelector:
                 f"the window is elapsing, the same failure mode derived pacing exists to prevent."
             )
 
-    def _seed_from_portfolio(self, timestamps: list) -> None:
+    def _seed_from_portfolio(
+        self,
+        timestamps: list,
+        starting_period_number: int = 1,
+        today: Optional[pd.Timestamp] = None,
+    ) -> None:
         """Real starting holdings block re-entry for the whole run; a
         resolvable scheduled_exit_date also lets them exit naturally within
-        this run (spec §6)."""
+        this run (spec §6).
+
+        Two ways to resolve a real position's ``scheduled_exit_date`` to a
+        period number, chosen by whether ``today`` is supplied:
+
+        - ``today is None`` (default -- every existing backtest call site,
+          UNCHANGED behavior): frame-relative -- find where the exit date
+          falls among ``timestamps``, the dates actually present in this
+          call's ``ranked`` frame. Correct for a full-window backtest,
+          where ``timestamps`` spans the whole simulated window.
+        - ``today`` supplied (live-mode, open question 27): calendar-
+          relative -- ``starting_period_number + busday_count(today,
+          exit_date)``, independent of what's in ``timestamps`` at all.
+          This is the only correct option for a live call, whose
+          ``ranked`` frame is typically a single day -- the frame-relative
+          approach would read every real exit date as "period 1" (the
+          only date in the frame), regardless of how far away it actually
+          is. An exit date already in the past relative to ``today``
+          yields a period number BELOW ``starting_period_number`` on
+          purpose, not clamped -- ``_process_exits``'s ``<=`` check (not
+          ``==``) fires it immediately on this run rather than silently
+          losing it, exactly the overdue-exit case that fix exists for.
+        """
         for ticker, real_position in self.portfolio.positions.items():
             exit_period = None
             if real_position.scheduled_exit_date:
                 try:
                     exit_ts = pd.Timestamp(real_position.scheduled_exit_date)
-                    idx = int(np.searchsorted(timestamps, exit_ts, side="left"))
-                    if idx < len(timestamps):
-                        exit_period = idx + 1  # 1-indexed periods
+                    if today is not None:
+                        offset = int(np.busday_count(today.date(), exit_ts.date()))
+                        exit_period = starting_period_number + offset
+                    else:
+                        idx = int(np.searchsorted(timestamps, exit_ts, side="left"))
+                        if idx < len(timestamps):
+                            exit_period = idx + 1  # 1-indexed periods
                 except (ValueError, TypeError):
                     exit_period = None
             self._open[ticker] = OpenPosition(
@@ -327,18 +392,35 @@ class TradeSelector:
 
     # -- entry point --------------------------------------------------------
 
-    def run(self, ranked: pd.DataFrame) -> pd.DataFrame:
+    def run(
+        self,
+        ranked: pd.DataFrame,
+        starting_period_number: int = 1,
+        today: Optional[pd.Timestamp] = None,
+    ) -> pd.DataFrame:
         """Walk every period in ``ranked`` (grouped by timestamp,
-        chronologically, 1-indexed as trading days) processing due exits
-        then new entries, until the run ends or periods are exhausted.
-        Force-closes anything still open when the run ends.
+        chronologically) processing due exits then new entries, until the
+        run ends or periods are exhausted. Force-closes anything still
+        open when the run ends.
+
+        Periods are numbered starting from ``starting_period_number``
+        (default 1, matching every existing backtest call site's
+        unchanged behavior -- a full-window backtest's first timestamp
+        genuinely is period 1). A live call passes the real, calendar-
+        derived period number for "today" (``config.hold_period.
+        period_number_for``) together with a single-day ``ranked`` frame,
+        and ``today`` itself (see ``_seed_from_portfolio``) -- see open
+        question 27. ``_entries_allowed``'s derived pacing needs no
+        changes at all to support this: it already recomputes fresh from
+        ``self._executed``/``self.remaining_budget`` and ``period_number``
+        every call, so correctly-seeded inputs are the whole fix.
         """
         timestamps = sorted(pd.unique(ranked.index.get_level_values("timestamp")))
-        self._seed_from_portfolio(timestamps)
+        self._seed_from_portfolio(timestamps, starting_period_number=starting_period_number, today=today)
 
         all_rows: list[dict] = []
         last_period, last_timestamp = 0, None
-        for period_number, timestamp in enumerate(timestamps, start=1):
+        for period_number, timestamp in enumerate(timestamps, start=starting_period_number):
             last_period, last_timestamp = period_number, timestamp
             period_rows = ranked.xs(timestamp, level="timestamp", drop_level=False)
 
@@ -347,17 +429,54 @@ class TradeSelector:
             self._assert_invariant()
             self._assert_pacing_invariant(period_number)
 
-        if self._open:
-            # Expected only if the window's real day 50 was reached and the
-            # entry cutoff somehow let a non-exitable position through
-            # (spec §5: "if it fires, log it"), or if `ranked` simply ran
-            # out of periods before every open position's scheduled exit.
-            reason = (
-                "cutoff was not enforced"
-                if last_period >= self.window_trading_days
-                else f"data ended at period {last_period}, before window close ({self.window_trading_days})"
-            )
-            all_rows.extend(self._force_close_remaining(last_period, last_timestamp, reason))
+        if today is None:
+            # Backtest mode, EXACTLY the original behavior: `ranked` here
+            # is understood to be ALL the data there ever will be for this
+            # run, so anything still open when it runs out gets force-
+            # closed regardless of why -- an unresolvable
+            # scheduled_exit_period (None: e.g. a real position with no
+            # scheduled_exit_date on file, force-closed as a safety net
+            # since there's no later call coming that could ever resolve
+            # it), a resolvable one the data simply didn't reach yet, or
+            # the entry cutoff failing to keep something exitable (spec
+            # §5: "if it fires, log it").
+            if self._open:
+                reason = (
+                    "cutoff was not enforced"
+                    if last_period >= self.window_trading_days
+                    else f"data ended at period {last_period}, before window close ({self.window_trading_days})"
+                )
+                all_rows.extend(self._force_close_remaining(last_period, last_timestamp, reason))
+        else:
+            # Live mode (open question 27): unlike a backtest, more calls
+            # ARE coming -- `ranked` here is one day's snapshot, not "all
+            # the data there ever will be". Force-closing everything still
+            # open at the end of today's single-period loop would
+            # incorrectly close every genuinely-still-pending position on
+            # every live invocation. Only two cases legitimately warrant
+            # it: (a) the true window close was actually reached this
+            # call, or (b) a position has NO resolvable
+            # scheduled_exit_period at all (seeded from a real position
+            # with no scheduled_exit_date on file) -- waiting is pointless
+            # when there's no known date to wait for, so this is flagged
+            # immediately rather than held open indefinitely. Everything
+            # else with a known, merely-not-yet-reached exit period is
+            # left in self._open for a later call to resolve naturally.
+            at_window_close = last_period >= self.window_trading_days
+            if at_window_close and self._open:
+                all_rows.extend(
+                    self._force_close_remaining(last_period, last_timestamp, "cutoff was not enforced")
+                )
+            else:
+                unresolvable = [t for t, pos in self._open.items() if pos.scheduled_exit_period is None]
+                if unresolvable:
+                    all_rows.extend(
+                        self._force_close_remaining(
+                            last_period, last_timestamp,
+                            "no resolvable scheduled_exit_date on this real position",
+                            tickers=unresolvable,
+                        )
+                    )
 
         self._log = all_rows
         return self._rows_to_frame(all_rows)

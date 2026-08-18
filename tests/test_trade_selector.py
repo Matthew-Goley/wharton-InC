@@ -5,7 +5,7 @@ import pytest
 from config import cost_model
 from src.config import TradingConfig
 from src.selection.portfolio_state import PortfolioState, Position
-from src.selection.trade_selector import TradeSelector
+from src.selection.trade_selector import OpenPosition, TradeSelector
 
 PERIODS = [pd.Timestamp("2020-01-01") + pd.Timedelta(days=i) for i in range(60)]
 
@@ -331,3 +331,165 @@ def test_real_position_with_scheduled_exit_date_exits_naturally():
     aaa_exits = _exits(trades)[_exits(trades).index.get_level_values("ticker") == "AAA"]
     assert len(aaa_exits) == 1
     assert not aaa_exits.iloc[0]["forced"]
+
+
+# --- live-mode cross-invocation state (baseline_system_architecture.md
+# open question 27): trades_executed_so_far seeding, the == -> <=
+# _process_exits fix, and run(starting_period_number=, today=) --------------
+
+def test_constructor_seeds_trades_executed_so_far():
+    """0 by default (every existing call site above, unchanged) -- a live
+    run seeds this from PortfolioState.trades_executed_so_far."""
+    selector = TradeSelector(_config(trade_budget=200), trades_executed_so_far=50)
+    assert selector.trades_taken == 50
+    assert selector.remaining_budget == 150
+
+
+def test_process_exits_fires_for_an_overdue_period_not_just_an_exact_match():
+    """Deliberate failing-case check for the == -> <= fix: a position
+    whose scheduled_exit_period is already in the past relative to the
+    period being processed must still exit, not be silently skipped
+    forever (period_number only ever increases, so if == is the test, a
+    missed exact match is missed permanently)."""
+    selector = TradeSelector(_config())
+    selector._open["AAA"] = OpenPosition(entry_period=1, scheduled_exit_period=3, position_size_pct=1.0)
+    rows = selector._process_exits(period_number=5, timestamp=PERIODS[5])
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "AAA"
+
+
+def test_process_exits_ignores_a_position_with_no_resolvable_exit_period():
+    """None must not raise (None <= period_number is a TypeError in
+    Python) and must not be treated as due -- distinct from the overdue
+    case above."""
+    selector = TradeSelector(_config())
+    selector._open["AAA"] = OpenPosition(entry_period=1, scheduled_exit_period=None, position_size_pct=1.0)
+    rows = selector._process_exits(period_number=5, timestamp=PERIODS[5])
+    assert rows == []
+    assert "AAA" in selector._open
+
+
+def test_live_mode_computes_exit_period_via_calendar_offset_not_frame_position():
+    """The whole point of `today`: with a single-row `ranked` frame, the
+    OLD frame-relative approach (searchsorted against `timestamps`) would
+    resolve every real exit date to 'period 1', the only date present.
+    Calendar-relative must give the real offset instead."""
+    today = pd.Timestamp("2026-08-17")  # Monday
+    exit_date = "2026-08-21"  # Friday, 4 trading days later
+    portfolio = PortfolioState(
+        as_of="2026-08-17", cash=0.0,
+        positions={
+            "AAA": Position(shares=10, avg_price=100.0, entry_date="2026-08-10", scheduled_exit_date=exit_date)
+        },
+    )
+    selector = TradeSelector(_config(hold_days=2, window_trading_days=50), portfolio=portfolio)
+    rows = {("BBB", today): (FLOOR / 2, 1)}  # filler, ineligible
+    selector.run(_ranked(rows), starting_period_number=1, today=today)
+    assert selector._open["AAA"].scheduled_exit_period == 5  # 1 + 4, not 1
+
+
+def test_live_mode_exits_an_overdue_real_position_immediately():
+    """End-to-end: the <= fix and live-mode calendar seeding together --
+    a real position whose scheduled_exit_date is already in the past
+    relative to `today` must exit on the very first live call that sees
+    it, not be silently lost because 'period 1' never literally matches
+    a negative/past period number under the old == check."""
+    today = pd.Timestamp("2026-08-18")
+    portfolio = PortfolioState(
+        as_of="2026-08-18", cash=0.0,
+        positions={
+            "AAA": Position(
+                shares=10, avg_price=100.0, entry_date="2026-08-01", scheduled_exit_date="2026-08-10"
+            )
+        },
+    )
+    selector = TradeSelector(_config(hold_days=2, window_trading_days=50), portfolio=portfolio)
+    rows = {("BBB", today): (FLOOR / 2, 1)}
+    trades = selector.run(_ranked(rows), starting_period_number=23, today=today)
+    aaa_exits = _exits(trades)[_exits(trades).index.get_level_values("ticker") == "AAA"]
+    assert len(aaa_exits) == 1
+    assert not aaa_exits.iloc[0]["forced"]
+
+
+def test_live_mode_does_not_force_close_a_position_with_a_known_future_exit():
+    """The force-close-at-run-end fix: a live call's `ranked` frame is
+    typically a single day, not 'all the data there ever will be' the
+    way a backtest's is. A position with a KNOWN exit date simply not
+    reached yet must stay open for a later call, not be force-closed
+    just because today's single-period loop ended."""
+    today = pd.Timestamp("2026-08-18")
+    portfolio = PortfolioState(
+        as_of="2026-08-18", cash=0.0,
+        positions={
+            "AAA": Position(
+                shares=10, avg_price=100.0, entry_date="2026-08-17", scheduled_exit_date="2026-08-25"
+            )
+        },
+    )
+    selector = TradeSelector(_config(hold_days=2, window_trading_days=50), portfolio=portfolio)
+    rows = {("BBB", today): (FLOOR / 2, 1)}
+    selector.run(_ranked(rows), starting_period_number=23, today=today)
+    assert selector.open_positions_count == 1
+    assert not selector.force_close_log
+
+
+def test_live_mode_still_force_closes_a_position_with_no_resolvable_exit_date():
+    """Deliberate failing-case counterpart to the test above: an
+    unresolvable scheduled_exit_period (no scheduled_exit_date on file at
+    all) is a genuinely different case from 'known but not yet reached'
+    -- there's no future call that could ever resolve it, so it's still
+    flagged immediately even in live mode, exactly as it always was in
+    backtest mode."""
+    today = pd.Timestamp("2026-08-18")
+    portfolio = PortfolioState(
+        as_of="2026-08-18", cash=0.0,
+        positions={"AAA": Position(shares=10, avg_price=100.0)},  # no scheduled_exit_date
+    )
+    selector = TradeSelector(_config(hold_days=2, window_trading_days=50), portfolio=portfolio)
+    rows = {("BBB", today): (FLOOR / 2, 1)}
+    selector.run(_ranked(rows), starting_period_number=23, today=today)
+    assert selector.open_positions_count == 0
+    assert any(entry["ticker"] == "AAA" for entry in selector.force_close_log)
+
+
+def test_live_mode_force_closes_everything_at_true_window_close():
+    """A live call that happens to land on the window's real last day
+    behaves like backtest mode's end-of-run safety net -- even a known,
+    far-future scheduled_exit_period gets force-closed, since there's no
+    period left in the competition for it to exit naturally."""
+    today = pd.Timestamp("2026-08-18")
+    portfolio = PortfolioState(
+        as_of="2026-08-18", cash=0.0,
+        positions={
+            "AAA": Position(
+                shares=10, avg_price=100.0, entry_date="2026-08-17", scheduled_exit_date="2026-09-15"
+            )
+        },
+    )
+    selector = TradeSelector(_config(hold_days=2, window_trading_days=50), portfolio=portfolio)
+    rows = {("BBB", today): (FLOOR / 2, 1)}
+    selector.run(_ranked(rows), starting_period_number=50, today=today)  # AT window close
+    assert selector.open_positions_count == 0
+    assert any(entry["ticker"] == "AAA" for entry in selector.force_close_log)
+
+
+def test_backtest_mode_is_unaffected_by_the_live_mode_force_close_change():
+    """Contrast the live-mode test above with the exact same scenario run
+    in backtest mode (today=None, the default): the original behavior --
+    force-close ANY remaining open position once the data runs out,
+    regardless of its own scheduled_exit_period -- must be completely
+    unchanged."""
+    portfolio = PortfolioState(
+        as_of="2020-01-01", cash=0.0,
+        positions={
+            "AAA": Position(
+                shares=10, avg_price=100.0, entry_date="2019-12-25",
+                scheduled_exit_date=str(PERIODS[10].date()),
+            )
+        },
+    )
+    selector = TradeSelector(_config(hold_days=2, window_trading_days=50), portfolio=portfolio)
+    rows = {("BBB", PERIODS[0]): (FLOOR / 2, 1)}  # single period, data ends well short of window close
+    selector.run(_ranked(rows))  # today=None -- backtest mode, unchanged
+    assert selector.open_positions_count == 0
+    assert any(entry["ticker"] == "AAA" for entry in selector.force_close_log)
