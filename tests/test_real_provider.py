@@ -299,6 +299,79 @@ def test_normalization_leaves_nan_as_nan_not_a_fabricated_rank(fixture_dirs):
     assert (frame["realized_kurt_20"].isna() == raw_frame["realized_kurt_20"].isna()).all()
 
 
+# --- sector_momentum_60_skip_10 (candidate feature, Moskowitz & Grinblatt 1999) ---
+
+def test_sector_momentum_is_not_yet_a_promoted_feature(fixture_dirs):
+    """Computed unconditionally, but must not silently start feeding models
+    until a paired IC test promotes it -- see baseline_system_architecture.md."""
+    assert "sector_momentum_60_skip_10" not in FEATURE_COLUMNS
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        sector_map={"ALWAYS": "Tech", "LEAVER": "Tech", "JOINER": "Health Care"},
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    assert "sector_momentum_60_skip_10" in frame.columns
+
+
+def test_sector_momentum_is_leave_one_out_average_of_peers(fixture_dirs):
+    """With exactly two members in a sector, each one's sector-momentum
+    feature must equal the OTHER member's own momentum_60_skip_10 exactly
+    -- the leave-one-out average of a single peer is just that peer."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        sector_map={"ALWAYS": "Tech", "LEAVER": "Tech", "JOINER": "Health Care"},
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    # ALWAYS and LEAVER coexist (both members) in [2020-03-01, 2020-05-01).
+    date = pd.Timestamp("2020-03-16")
+    always_mom = frame.loc[("ALWAYS", date), "momentum_60_skip_10"]
+    leaver_mom = frame.loc[("LEAVER", date), "momentum_60_skip_10"]
+    assert np.isfinite(always_mom) and np.isfinite(leaver_mom)
+    assert frame.loc[("ALWAYS", date), "sector_momentum_60_skip_10"] == pytest.approx(leaver_mom)
+    assert frame.loc[("LEAVER", date), "sector_momentum_60_skip_10"] == pytest.approx(always_mom)
+
+
+def test_sector_momentum_is_nan_for_a_lone_sector_member(fixture_dirs):
+    """JOINER is the only Health Care member (a real, mapped sector) --
+    leave-one-out has zero peers left, must be NaN, not a divide-by-zero
+    crash -- distinct from the unmapped-ticker case below."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        sector_map={"ALWAYS": "Tech", "LEAVER": "Tech", "JOINER": "Health Care"},
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    date = pd.Timestamp("2020-03-16")
+    assert pd.isna(frame.loc[("JOINER", date), "sector_momentum_60_skip_10"])
+
+
+def test_sector_momentum_is_nan_when_unmapped(fixture_dirs):
+    """A ticker not in the sector map (or sharing the 'Unknown' fallback
+    with unrelated other unmapped tickers) must get NaN, not a spurious
+    average computed across tickers that aren't actually peers."""
+    data_dir, membership_csv = fixture_dirs
+    provider = RealDataProvider(
+        universe=["ALWAYS", "LEAVER", "JOINER"], data_dir=data_dir, membership_csv=membership_csv,
+        sector_map={"ALWAYS": "Tech"},  # LEAVER and JOINER both unmapped -> "Unknown"
+    )
+    frame = provider.get_feature_table("2019-12-01", "2020-08-31", hold_days=5).frame
+    date = pd.Timestamp("2020-03-16")
+    assert pd.isna(frame.loc[("LEAVER", date), "sector_momentum_60_skip_10"])
+    assert pd.isna(frame.loc[("JOINER", date), "sector_momentum_60_skip_10"])
+    # ALWAYS is alone in "Tech" (its only real-sector peer, LEAVER, is
+    # unmapped here) -- zero real peers, also NaN.
+    assert pd.isna(frame.loc[("ALWAYS", date), "sector_momentum_60_skip_10"])
+
+
+def test_sector_map_defaults_to_the_real_generated_map():
+    """Constructor injection (sector_map=None) must fall back to
+    config.sector_map.SECTOR_MAP, not silently produce an empty map."""
+    provider = RealDataProvider()
+    assert provider.sector_map.get("AAPL") == "Information Technology"
+
+
 # --- jump ratio (Khashanah et al., JRSS-C 2025) -----------------------------
 
 def _quiet_returns(n=400, scale=0.01, seed=0):

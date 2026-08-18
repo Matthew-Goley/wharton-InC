@@ -60,7 +60,6 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from config.sector_map import SECTOR_MAP
 from src.data_layer.interface import DataProvider, FeatureTable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -200,7 +199,17 @@ class RealDataProvider(DataProvider):
         membership_csv: Path = MEMBERSHIP_CSV,
         demean_target: bool = True,
         normalize_features: bool = False,
+        sector_map: Optional[dict[str, str]] = None,
     ):
+        #: ticker -> sector, defaulting to the real generated map. Injectable
+        #: (matching universe/data_dir/membership_csv's existing pattern) so
+        #: tests can exercise sector-keyed logic (sector_momentum_60_skip_10)
+        #: against a small synthetic map instead of needing real tickers to
+        #: happen to appear in config/sector_map.py.
+        if sector_map is None:
+            from config.sector_map import SECTOR_MAP  # local import: avoid a hard dependency at module load
+            sector_map = SECTOR_MAP
+        self.sector_map = sector_map
         #: When True (the default) the label is excess return over that date's
         #: universe mean. See _demean_target for what that changes downstream.
         self.demean_target = demean_target
@@ -285,9 +294,10 @@ class RealDataProvider(DataProvider):
         frame = frame[(timestamps >= start_ts) & (timestamps <= end_ts)]
         frame = self._filter_point_in_time(frame)
         frame = frame.sort_index()
-        # After the point-in-time filter, so both cross-sectional operations
-        # below are computed against the roster that was actually investable
+        # After the point-in-time filter, so every cross-sectional operation
+        # below is computed against the roster that was actually investable
         # that day, not every name on file.
+        frame = self._add_sector_momentum(frame)
         frame = self._normalize_features_cross_sectionally(frame)
         frame = self._demean_target(frame)
 
@@ -345,7 +355,7 @@ class RealDataProvider(DataProvider):
                 "ret_vol_corr_20": returns.rolling(20, min_periods=10).corr(volume.pct_change()),
                 "jump_ratio": jump_ratio(close),
                 TARGET_COLUMN: fwd_return,
-                "sector": SECTOR_MAP.get(ticker, UNKNOWN_SECTOR),
+                "sector": self.sector_map.get(ticker, UNKNOWN_SECTOR),
             }
         )
         # A zero denominator anywhere above yields +/-inf, which XGBoost would
@@ -358,6 +368,60 @@ class RealDataProvider(DataProvider):
             return None
         df.index = pd.MultiIndex.from_product([[ticker], df.index], names=["ticker", "timestamp"])
         return df
+
+    def _add_sector_momentum(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """CANDIDATE feature -- TESTED AND REJECTED, kept computed (but
+        still not in FEATURE_COLUMNS) as a negative finding, same posture
+        as normalize_features: don't re-add this to the model without
+        reading why it was removed.
+
+        Result (scripts/feature_candidate_sector_momentum.py, paired
+        against broad's established 15-feature baseline, same genome/seed,
+        held-out TEST window): out-of-sample IC +0.0209 -> +0.0095, paired
+        t=-2.69 -- a real, decisive move in the WRONG direction, not a
+        non-result. Adding this feature roughly halved broad's only
+        clearly-nonzero measurement. Best guess at why, not confirmed: a
+        sector-wide average is structurally closer to a regime/market-level
+        signal than this project's other features, which are deliberately
+        idiosyncratic and scale-free within a single ticker's own history
+        (see the module docstring's note on why the target is cross-
+        sectionally demeaned) -- exactly the kind of common, per-date
+        co-movement that doesn't survive out of sample. Caveat on the test
+        itself: reused broad's existing genome rather than re-running the
+        GA for the enlarged feature set, per this project's "GA last, only
+        if IC moves" rule -- a properly re-tuned model might behave
+        differently, untested.
+
+        A ticker's sector's own momentum, leave-one-out so this isn't
+        circular (a name's sector-momentum feature should describe its
+        peers, not partly itself). Motivated directly by Moskowitz &
+        Grinblatt 1999 ("Do Industries Explain Momentum?") — industry-level
+        momentum is a real, separately-documented effect, in some
+        specifications largely subsuming individual-stock momentum. Built
+        from ``momentum_60_skip_10`` (this project's own Jegadeesh &
+        Titman-style momentum feature) rather than the noisier 5-day one,
+        matching the multi-month formation periods the industry-momentum
+        literature actually studies.
+
+        Requires ``self.sector_map`` — NaN for the ~70 universe tickers
+        with no resolved sector (and for any ticker on a day it's the only
+        member of its sector present, where "leave one out" would divide
+        by zero) — same fallback shape as every other sector-keyed
+        computation in this project.
+        """
+        if frame.empty:
+            return frame
+        timestamps = frame.index.get_level_values("timestamp")
+        grouped = frame.groupby([timestamps, "sector"])["momentum_60_skip_10"]
+        sector_sum = grouped.transform("sum")
+        sector_count = grouped.transform("count")
+        own = frame["momentum_60_skip_10"]
+        loo_count = sector_count - 1
+        loo_mean = (sector_sum - own) / loo_count.replace(0, np.nan)
+        # "Unknown" isn't a real sector -- every unmapped ticker sharing it
+        # would otherwise get averaged together as if they were peers.
+        loo_mean = loo_mean.where(frame["sector"] != UNKNOWN_SECTOR)
+        return frame.assign(sector_momentum_60_skip_10=loo_mean)
 
     def _normalize_features_cross_sectionally(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Replace every feature with its cross-sectional percentile rank
