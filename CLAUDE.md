@@ -112,7 +112,7 @@ pip install -r requirements.txt
 
 ## Statistical significance gate
 
-Any SE computed on a per-date IC series must use block-bootstrap correction (`src.evaluation.block_se.block_bootstrap_se`, over non-overlapping `hold_days`-wide blocks) — naive `std(series)/√n_dates` understates it by a consistent ~1.6× on this project's real data (verified two independent ways, `baseline_system_architecture.md` items 45/47) and is not acceptable anywhere in this project going forward. The feature-work promotion gate (`scripts/feature_candidate_common.py`) reports both automatically; representative corrected 2-SE gate ≈**0.0092 IC** (see item 47 for the full table and the underlying single-arm/paired figures).
+Any SE computed on a per-date IC series must use block-bootstrap correction (`src.evaluation.block_se.block_bootstrap_se`, over non-overlapping `hold_days`-wide blocks) — naive `std(series)/√n_dates` understates it by a consistent ~1.6× on this project's real data (verified two independent ways, `baseline_system_architecture.md` items 45/47) and is not acceptable anywhere in this project going forward. The feature-work promotion gate (`scripts/feature_candidate_common.py`) reports both automatically; representative corrected 2-SE gate ≈**0.0092 IC**, which is **~44% of broad's own measured IC (0.0209)** — IC-based single-feature promotion is not achievable at this project's current sample size for anything short of a very large effect (see item 47 for the full table and the underlying single-arm/paired figures). The foundational "broad's IC is real" claim itself survives correction (naive t=+4.27 → corrected t=+2.59) but at roughly half its previously-stated margin.
 
 ## Conventions
 
