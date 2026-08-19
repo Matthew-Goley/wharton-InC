@@ -23,9 +23,22 @@ ASSUMED_SPREAD_BPS: float = 5.0
 MIN_EDGE_MARGIN: float = 2.0
 
 #: Per-stock position limit, as a fraction of total portfolio value.
-#: Competition rule, not yet confirmed — see WInS Portfolio Summary → Rules.
-#: `None` disables the cap until a real value is hardcoded here.
-POSITION_CAP_PCT: float | None = None
+#: Competition rule, not yet CONFIRMED against WInS Portfolio Summary ->
+#: Rules -- but no longer `None`. `None` here is not a neutral "disabled"
+#: state: TradeSelector._size_positions requires a real cap to size
+#: anything at all (a live correctness bug otherwise -- baseline_system_
+#: architecture.md open question 41 -- overlapping fixed-hold positions
+#: compound exposure past 100% under any per-period-recomputed formula).
+#: 0.10 is a deliberately chosen WORKING DEFAULT, not a guess at the real
+#: competition rule: max_concurrent_positions = floor(1/POSITION_CAP_PCT)
+#: = 10, chosen to match this project's own standing hold_days=5 (config/
+#: hold_period.py) against its own standing pacing (trade_budget=200 over
+#: window_trading_days=50 implies roughly 2 entries/period at steady
+#: state) -- 5 * 2 = 10, so the cap and the pacing it has to coexist with
+#: are mutually consistent by construction, not independently guessed
+#: numbers that might starve entries or blow the budget. Replace with the
+#: real competition value the moment it's confirmed.
+POSITION_CAP_PCT: float | None = 0.10
 
 
 def round_trip_cost_fraction() -> float:

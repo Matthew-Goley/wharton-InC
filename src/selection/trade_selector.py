@@ -230,14 +230,51 @@ class TradeSelector:
         return eligible
 
     def _size_positions(self, selected: pd.DataFrame) -> pd.Series:
-        """Equal-weight, capped at ``position_cap_pct`` (architecture §5).
-        Without a confirmed cap, falls back to equal-weight within this
-        period's batch — a placeholder, not a real capital allocation."""
+        """Fixed at ``position_cap_pct`` for every entry — never batch-
+        relative (``1 / len(selected)``, the previous fallback here). That
+        was a real, live correctness bug, not a config gap: it sized each
+        period's entries as if that period owned the whole portfolio,
+        ignoring every already-open position from prior periods. Under a
+        fixed-hold regime with ``hold_days > 1`` and repeated entries,
+        overlapping holds compound without bound — empirically, 4
+        entries/day at a naive 25% each reaches 500% of capital by day 5
+        with ``hold_days=5`` (nothing has exited yet; the earliest exit is
+        day 6).
+
+        There is no per-period-recomputed formula that fixes this: a
+        position's size is locked in at entry and never rebalanced (no
+        stop-loss, no take-profit, no signal-reversal exit —
+        exit_rule_spec.md), so nothing computed on a LATER day can
+        retroactively shrink an EARLIER day's already-open position. The
+        only way to keep total exposure bounded is a FIXED per-position
+        size chosen in advance, small enough that the worst-case
+        steady-state concurrent-position count still fits within 100% —
+        exactly what ``position_cap_pct`` is for. ``entries_allowed``'s own
+        ``by_capital`` term (``floor(1/cap) - open_positions_count``) is
+        what actually enforces the resulting ceiling as positions
+        accumulate across periods; this method just has to hold up its
+        end by never sizing anything other than the fixed ``cap``.
+
+        Raises if ``position_cap_pct`` isn't set, rather than silently
+        reintroducing the bug this fixes — a real run should always have
+        one set (config/cost_model.py's ``POSITION_CAP_PCT``); a caller
+        that genuinely wants to test something cap-independent should say
+        so explicitly, not fall through to a formula that happens to be
+        unsafe.
+        """
         if selected.empty:
             return pd.Series(dtype=float, index=selected.index)
         cap = self.config.position_cap_pct
-        size = cap if cap is not None else 1.0 / len(selected)
-        return pd.Series(size, index=selected.index)
+        if cap is None:
+            raise ValueError(
+                "TradingConfig.position_cap_pct is not set -- sizing positions as "
+                "1/len(selected) (equal-weight within THIS PERIOD's batch alone) was a real "
+                "correctness bug under a multi-period, overlapping-hold regime: it ignores every "
+                "already-open position, and total exposure compounds without bound across "
+                "repeated entries. Set a real position_cap_pct (config/cost_model.py's "
+                "POSITION_CAP_PCT) before sizing any entries."
+            )
+        return pd.Series(cap, index=selected.index)
 
     # -- per-period mechanics ---------------------------------------------
 

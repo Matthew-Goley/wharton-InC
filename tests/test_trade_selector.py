@@ -177,18 +177,72 @@ def test_edge_below_cost_floor_is_excluded():
     assert list(_entries(trades).index.get_level_values("ticker")) == ["AAA"]
 
 
-def test_position_size_is_equal_weight_within_period_by_default():
+def test_position_size_is_fixed_at_the_configured_cap_not_batch_relative():
+    """The corrected default (baseline_system_architecture.md open
+    question 41): TradingConfig.position_cap_pct now defaults to a real
+    value (config/cost_model.py's POSITION_CAP_PCT), and every entry is
+    sized at exactly that fixed fraction -- NOT 1/len(selected), which
+    would have given 0.5 here (2 entries, one period) under the old,
+    removed fallback. This is a direct behavioral regression test for the
+    fix, not just the raise-on-None check below."""
     selector = TradeSelector(_config(top_n_per_period=5, hold_days=5))
     rows = {("AAA", PERIODS[0]): (EDGE, 1), ("BBB", PERIODS[0]): (EDGE, 2)}
     trades = selector.run(_ranked(rows))
-    assert (_entries(trades)["position_size_pct"] == 0.5).all()
+    from config import cost_model
+    assert (_entries(trades)["position_size_pct"] == cost_model.POSITION_CAP_PCT).all()
 
 
-def test_position_size_respects_cap():
+def test_position_size_respects_an_explicit_cap():
     selector = TradeSelector(_config(top_n_per_period=5, hold_days=5, position_cap_pct=0.1))
     rows = {("AAA", PERIODS[0]): (EDGE, 1), ("BBB", PERIODS[0]): (EDGE, 2)}
     trades = selector.run(_ranked(rows))
     assert (_entries(trades)["position_size_pct"] == 0.1).all()
+
+
+def test_sizing_raises_when_position_cap_pct_is_unset():
+    """Deliberate failing-case check, the direct regression test for the
+    actual bug (open question 41): position_cap_pct=None must not fall
+    back to 1/len(selected) (batch-relative, unsafe under overlapping
+    holds) -- it must fail loudly the moment sizing is attempted, not
+    silently produce an exposure-compounding size."""
+    selector = TradeSelector(_config(top_n_per_period=5, hold_days=5, position_cap_pct=None))
+    rows = {("AAA", PERIODS[0]): (EDGE, 1)}
+    with pytest.raises(ValueError, match="position_cap_pct is not set"):
+        selector.run(_ranked(rows))
+
+
+def test_five_day_overlapping_holds_never_exceed_100_percent_exposure():
+    """The literal reported bug, reproduced and proven fixed: with
+    hold_days=5, nothing entered on days 1-5 has a scheduled_exit_period
+    <= 5 (the earliest is day 6), so every entry made across a 5-period
+    run with abundant candidates each day is SIMULTANEOUSLY open at the
+    end of day 5 -- summing position_size_pct across every entry IS the
+    peak exposure. Before the fix (1/len(selected), batch-relative): 4
+    abundant candidates/day at a naive 25% each would reach 500%. After
+    (fixed position_cap_pct=0.10, entries_allowed's by_capital term
+    throttling as positions accumulate): must never exceed 100%, checked
+    at every day along the way, not just the final total."""
+    hold_days, cap, budget, window = 5, 0.10, 200, 50
+    # Abundant: 8 eligible candidates every single day, comfortably more
+    # than pacing or capital could ever admit in one period.
+    rows = {}
+    for day in range(5):
+        for i in range(8):
+            rows[(f"T{day}_{i}", PERIODS[day])] = (EDGE, i)
+    selector = TradeSelector(_config(hold_days=hold_days, position_cap_pct=cap, trade_budget=budget,
+                                      window_trading_days=window, top_n_per_period=None))
+    trades = selector.run(_ranked(rows))
+    entries = _entries(trades)
+
+    for day in range(1, 6):  # 1-indexed periods
+        exposure_through_today = entries[entries["entry_period"] <= day]["position_size_pct"].sum()
+        assert exposure_through_today <= 1.0 + 1e-9, (
+            f"day {day}: cumulative exposure {exposure_through_today:.1%} exceeds 100%"
+        )
+    # And confirm this is a real, binding check, not vacuously true because
+    # nothing got entered -- entries were actually made every day.
+    assert len(entries) > 0
+    assert entries["entry_period"].nunique() == 5
 
 
 def test_real_position_without_scheduled_exit_is_force_closed_and_logged():
