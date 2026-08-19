@@ -65,10 +65,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tickers", nargs="+", required=True)
     parser.add_argument("--days", type=int, default=5)
+    parser.add_argument(
+        "--window-start", default=None,
+        help=(
+            "Override config/hold_period.py's WINDOW_START_DATE for this run. Explicit on "
+            "purpose, not just a convenience -- an arbitrary/uncalibrated anchor silently "
+            "changes what window PERIOD the simulated dates land on, which changes the derived "
+            "pacing rate (fewer entry-periods remaining reads as 'behind schedule' and inflates "
+            "the allowance). Pass the first of --days dates here to simulate a true fresh-window "
+            "start (period 1); leave unset to use the real, currently-confirmed season start."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    if args.window_start is not None:
+        hold_period.WINDOW_START_DATE = args.window_start
     if hold_period.WINDOW_START_DATE is None:
-        print("config/hold_period.py's WINDOW_START_DATE is not set.", file=sys.stderr)
+        print("config/hold_period.py's WINDOW_START_DATE is not set (and --window-start wasn't "
+              "passed either).", file=sys.stderr)
         return 1
 
     config = BaselineConfig()
@@ -95,7 +109,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             continue
         expert_predictions[spec.name] = bundle.models[spec.name].predict(edata.X)
 
-    combiner = OverallModel(config.experts)
+    combiner = OverallModel(config.experts, agreement_bonus=config.trading.agreement_bonus)
     combined = combiner.combine(expert_predictions)
     risk = table.frame["volatility_20"].reindex(combined.index)
     ranked = combiner.rank(combined, ranking_score=config.trading.ranking_score, risk=risk)

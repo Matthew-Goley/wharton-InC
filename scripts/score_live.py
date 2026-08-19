@@ -242,7 +242,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             continue
         expert_predictions[spec.name] = bundle.models[spec.name].predict(edata.X)
 
-    combiner = OverallModel(config.experts)
+    # Read from config explicitly rather than trusting OverallModel's own
+    # bare-call default -- the same principle already applied to
+    # ranking_score (open question 33); this was gap #5's exact shape a
+    # second time (open question 42).
+    combiner = OverallModel(config.experts, agreement_bonus=config.trading.agreement_bonus)
     combined = combiner.combine(expert_predictions)
     ranking_score = config.trading.ranking_score
     risk = table.frame["volatility_20"].reindex(combined.index) if ranking_score == "vol_adjusted" else None

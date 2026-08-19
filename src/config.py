@@ -211,6 +211,21 @@ class TradingConfig:
     #: outstanding landmines rather than silently left for later discovery.
     ranking_score: str = "vol_adjusted"
 
+    #: The standing agreement-bonus default (baseline_system_architecture.md
+    #: open question 13: 0, "no evidence bonus=on helps, at return or via
+    #: the PARA count"). Declared HERE for the identical reason
+    #: ranking_score is: OverallModel.__init__'s own code default was
+    #: 0.1, not 0 -- a second instance of gap #5's exact shape, found
+    #: while verifying a live dry run (open question 42), not caught by
+    #: item 33's fix, since that only touched rank()'s default, not
+    #: OverallModel's constructor. Both score_live.py and scripts/dry_run_
+    #: multi_day.py called `OverallModel(config.experts)` bare, silently
+    #: running agreement_bonus=0.1 -- affecting combined_score directly
+    #: (it's multiplied into it), and therefore every downstream cost-
+    #: clearing, ranking, and sizing decision in every real/dry run
+    #: reported before this fix.
+    agreement_bonus: float = 0.0
+
 
 @dataclass(frozen=True)
 class BaselineConfig:

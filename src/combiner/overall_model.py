@@ -30,7 +30,7 @@ class OverallModel:
     plus a bonus when broad and sector agree on direction.
     """
 
-    def __init__(self, experts: tuple[ExpertSpec, ...], agreement_bonus: float = 0.1):
+    def __init__(self, experts: tuple[ExpertSpec, ...], agreement_bonus: Optional[float] = None):
         """``agreement_bonus``: strength of the reinforcement applied when
         broad and sector agree on direction (0 disables it entirely — an
         intentional ablation axis, not just a tuning knob. First real
@@ -42,9 +42,27 @@ class OverallModel:
         makes this bonus (amplify agreement) potentially in tension with
         ``rank(ranking_score="uncertainty_adjusted")`` (demote disagreement)
         once it exists — both read the same broad/sector gap, in opposite
-        directions. Step 5 of the sector-expert plan is expected to run the
-        ablation both ways (bonus on vs off) under uncertainty_adjusted
-        ranking to find out whether they're complementary or redundant."""
+        directions. Step 5 of the sector-expert plan ran the ablation both
+        ways (bonus on vs off) under vol_adjusted ranking; the standing
+        conclusion (baseline_system_architecture.md open question 13) is
+        ``0`` — no evidence bonus=on helps, at return or via the PARA
+        rank-1-share count.
+
+        Defaults to ``None``, resolved to ``TradingConfig.agreement_bonus``
+        AT CALL TIME, not a hardcoded literal on this signature — the
+        identical fix ``OverallModel.rank``'s ``ranking_score`` parameter
+        already got (open question 33), applied here because this
+        parameter had the exact same shape of bug: its own code default
+        was ``0.1``, silently disagreeing with the standing ``0`` decision,
+        found live in ``score_live.py`` and ``scripts/dry_run_multi_day.py``
+        (open question 42), both of which called ``OverallModel(config.
+        experts)`` bare. ``combined_score`` is multiplied by a factor
+        derived from this value (see ``combine``), so a bare call with the
+        wrong default doesn't just mis-rank -- it changes which
+        candidates clear the cost floor at all.
+        """
+        if agreement_bonus is None:
+            agreement_bonus = TradingConfig.agreement_bonus
         broad_specs = [spec for spec in experts if spec.sector is None]
         if len(broad_specs) != 1 or broad_specs[0].name != BROAD_EXPERT:
             raise ValueError(f"Expected exactly one broad expert named '{BROAD_EXPERT}'")
