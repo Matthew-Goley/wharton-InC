@@ -68,6 +68,30 @@ class OpenPosition:
     position_size_pct: float
 
 
+@dataclass
+class EligibilityStats:
+    """Per-filter-stage rejection counts, accumulated across every period
+    _eligible() actually runs on (a period with zero pacing-derived entry
+    slots never calls it at all -- see _process_entries -- so these
+    reflect candidates actually evaluated, not literally every period in
+    the window).
+
+    A funnel, not independent totals: each candidate is counted at the
+    FIRST stage that rejects it, then removed from consideration, so a
+    row rejected for direction is never also double-counted against cost.
+    This is what makes "how many did the cost filter actually reject"
+    (as opposed to "how many entries got made") answerable at all --
+    TradeSelector's own output (the trades frame) only ever shows what
+    was ADMITTED, never what was screened out or why.
+    """
+
+    considered: int = 0
+    rejected_direction: int = 0  # long-only: combined_score <= 0
+    rejected_cost: int = 0  # |combined_score| <= cost floor
+    rejected_earnings: int = 0  # known earnings date inside the hold window
+    rejected_blocked: int = 0  # already open, just exited, or frequency-capped
+
+
 class TradeSelector:
     def __init__(
         self,
@@ -91,6 +115,13 @@ class TradeSelector:
         #: announcement is KNOWN to fall inside the hold window, see
         #: _eligible.
         self.days_to_next_earnings = days_to_next_earnings
+        #: Per-filter-stage rejection counts, see EligibilityStats.
+        self.eligibility_stats = EligibilityStats()
+        #: period_number -> the derived pacing allowance actually used
+        #: that period (entries_allowed's return value, snapshotted at
+        #: the moment _process_entries computed it -- see there for why
+        #: this can't just be recomputed after the fact).
+        self.period_pacing: dict[int, int] = {}
         #: E: entries + exits executed so far. 0 by default (every
         #: existing backtest call site unchanged) -- a live run seeds
         #: this from PortfolioState.trades_executed_so_far
@@ -135,15 +166,25 @@ class TradeSelector:
     def _eligible(self, period_ranked: pd.DataFrame) -> pd.DataFrame:
         """Rows it's legal to enter: long-only, cost-clearing, not already
         open, not exited this same period (spec §6 same-day re-entry ban),
-        no known earnings announcement inside the hold window."""
+        no known earnings announcement inside the hold window.
+
+        Updates self.eligibility_stats as it goes -- a funnel, so each
+        candidate is counted at the first stage that rejects it (see
+        EligibilityStats)."""
         eligible = period_ranked
+        self.eligibility_stats.considered += len(period_ranked)
+
         if not self.config.allow_short:
+            before = len(eligible)
             eligible = eligible[eligible["combined_score"] > 0]
+            self.eligibility_stats.rejected_direction += before - len(eligible)
 
         # Cost charged once (entry only) but at the round-trip rate — the
         # exit is already mechanically committed, not a second decision.
         cost_floor = self.config.min_edge_margin * cost_model.round_trip_cost_fraction()
+        before = len(eligible)
         eligible = eligible[eligible["combined_score"].abs() > cost_floor]
+        self.eligibility_stats.rejected_cost += before - len(eligible)
 
         if self.days_to_next_earnings is not None and not eligible.empty:
             # Event-risk control, not a return predictor -- settled two
@@ -169,9 +210,11 @@ class TradeSelector:
             # fillna(max) (that's a RANKING penalty, where "assume the
             # worst" is safe; this is a hard ELIGIBILITY gate, where the
             # same assumption would be a severe, disproportionate cost).
+            before = len(eligible)
             dte = self.days_to_next_earnings.reindex(eligible.index)
             earnings_in_window = dte.notna() & (dte <= self.hold_days)
             eligible = eligible[~earnings_in_window]
+            self.eligibility_stats.rejected_earnings += before - len(eligible)
 
         if eligible.empty:
             return eligible
@@ -180,8 +223,11 @@ class TradeSelector:
             blocked = blocked | {
                 t for t, n in self._entry_counts.items() if n >= self._max_entries_per_ticker
             }
+        before = len(eligible)
         excluded = eligible.index.get_level_values("ticker").isin(blocked)
-        return eligible[~excluded]
+        eligible = eligible[~excluded]
+        self.eligibility_stats.rejected_blocked += before - len(eligible)
+        return eligible
 
     def _size_positions(self, selected: pd.DataFrame) -> pd.Series:
         """Equal-weight, capped at ``position_cap_pct`` (architecture §5).
@@ -220,7 +266,7 @@ class TradeSelector:
         self._just_exited = set(due)
         return rows
 
-    def _entries_allowed(self, period_number: int) -> int:
+    def entries_allowed(self, period_number: int) -> int:
         """spec §3-4: budget reserves one exit-unit per open position, and
         each new entry obligates its own future exit (2 units); capital
         additionally caps concurrent positions via position_cap_pct.
@@ -270,7 +316,16 @@ class TradeSelector:
         if period_number > self.window_trading_days - self.hold_days:
             return []
 
-        n = min(self._entries_allowed(period_number), len(period_ranked))
+        # Recorded at the moment it's computed, not re-derivable
+        # afterward: calling entries_allowed(period_number) again once
+        # this period's entries have already been processed would read
+        # post-period state (budget already spent), not the allowance
+        # that actually governed this period's decision. A caller (e.g.
+        # score_live.py, reporting "what pacing said this period") needs
+        # this snapshot, not a recomputation.
+        allowed = self.entries_allowed(period_number)
+        self.period_pacing[period_number] = allowed
+        n = min(allowed, len(period_ranked))
         if n <= 0:
             return []
         eligible = self._eligible(period_ranked)
@@ -357,7 +412,7 @@ class TradeSelector:
 
     def _assert_pacing_invariant(self, period_number: int) -> None:
         """General form of the bug that motivated derived pacing (see
-        _entries_allowed's docstring): any resource-constrained simulation
+        entries_allowed's docstring): any resource-constrained simulation
         should track its resource consumption against elapsed time, not
         just check it never exceeds the final ceiling. This is deliberately
         ONE-SIDED — it only fires when budget is being consumed FASTER than
@@ -451,7 +506,7 @@ class TradeSelector:
         derived period number for "today" (``config.hold_period.
         period_number_for``) together with a single-day ``ranked`` frame,
         and ``today`` itself (see ``_seed_from_portfolio``) -- see open
-        question 27. ``_entries_allowed``'s derived pacing needs no
+        question 27. ``entries_allowed``'s derived pacing needs no
         changes at all to support this: it already recomputes fresh from
         ``self._executed``/``self.remaining_budget`` and ``period_number``
         every call, so correctly-seeded inputs are the whole fix.

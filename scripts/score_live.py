@@ -151,6 +151,29 @@ def _reason_for_row(row: pd.Series, config: BaselineConfig) -> str:
     return f"{'; '.join(pieces)}. {ranking_note}. {sizing_note}."
 
 
+def _print_eligibility_summary(selector: TradeSelector, period_number: int) -> None:
+    """Why the allocation layer admitted what it admitted, and rejected
+    what it rejected -- CLAUDE.md's reasoning requirement extends to this,
+    not just to what got recommended. TradeSelector's own output never
+    shows candidates that were screened out, so this is the only place
+    that number exists at all."""
+    stats = selector.eligibility_stats
+    admitted = stats.considered - stats.rejected_direction - stats.rejected_cost - stats.rejected_earnings - stats.rejected_blocked
+    print(f"\nEligibility this period: {stats.considered} candidate(s) considered, {admitted} admitted.")
+    print(f"  rejected -- direction (short, long-only): {stats.rejected_direction}")
+    print(f"  rejected -- cost floor not cleared:        {stats.rejected_cost}")
+    print(f"  rejected -- earnings inside hold window:   {stats.rejected_earnings}")
+    print(f"  rejected -- already held / blocked:        {stats.rejected_blocked}")
+    # Read back the snapshot TradeSelector recorded at the moment this
+    # period's pacing decision was actually made -- NOT re-derived from
+    # selector.entries_allowed(period_number) now, which after run() has
+    # completed would read post-period state (budget already spent by
+    # whatever just got entered), not the allowance that governed it.
+    pacing = selector.period_pacing.get(period_number)
+    print(f"  pacing allowance this period: {pacing} entries "
+          f"(remaining_budget={selector.remaining_budget}, open_positions={selector.open_positions_count})")
+
+
 def _emit(report: pd.DataFrame, today: pd.Timestamp) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"{today.date()}.json"
@@ -242,6 +265,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         days_to_next_earnings=table.frame["days_to_next_earnings"],
     )
     trades = selector.run(today_ranked, starting_period_number=period_number, today=today)
+    _print_eligibility_summary(selector, period_number)
 
     report = _build_reasoning_report(trades, ranked, config)
     _emit(report, today)

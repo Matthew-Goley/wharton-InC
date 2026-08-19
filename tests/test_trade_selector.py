@@ -5,7 +5,7 @@ import pytest
 from config import cost_model
 from src.config import TradingConfig
 from src.selection.portfolio_state import PortfolioState, Position
-from src.selection.trade_selector import OpenPosition, TradeSelector
+from src.selection.trade_selector import EligibilityStats, OpenPosition, TradeSelector
 
 PERIODS = [pd.Timestamp("2020-01-01") + pd.Timedelta(days=i) for i in range(60)]
 
@@ -574,3 +574,118 @@ def test_days_to_next_earnings_filter_is_off_by_default():
     selector = TradeSelector(_config(hold_days=hold_days, top_n_per_period=5))  # no days_to_next_earnings
     trades = selector.run(_ranked(rows))
     assert len(_entries(trades)) == 1
+
+
+# --- EligibilityStats: per-filter-stage rejection counts --------------------
+# TradeSelector's own output (the trades frame) only ever shows what was
+# ADMITTED -- these answer "how many candidates did each filter actually
+# reject", which nothing else exposes.
+
+def test_eligibility_stats_counts_a_cost_rejection():
+    rows = {("TOO_SMALL", PERIODS[0]): (FLOOR / 2, 1)}  # positive, but below the cost floor
+    selector = TradeSelector(_config(top_n_per_period=5))
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.rejected_cost == 1
+    assert selector.eligibility_stats.rejected_direction == 0
+
+
+def test_eligibility_stats_counts_a_direction_rejection():
+    rows = {("SHORT", PERIODS[0]): (-EDGE, 1)}  # negative, long-only default
+    selector = TradeSelector(_config(top_n_per_period=5))
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.rejected_direction == 1
+
+
+def test_eligibility_stats_counts_an_earnings_rejection():
+    hold_days = 5
+    rows = {("RISKY", PERIODS[0]): (EDGE, 1)}
+    dte = _dte({("RISKY", PERIODS[0]): 3})
+    selector = TradeSelector(_config(hold_days=hold_days, top_n_per_period=5), days_to_next_earnings=dte)
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.rejected_earnings == 1
+
+
+def test_eligibility_stats_counts_a_blocked_rejection():
+    """A ticker already open (from a real seeded position) is a real
+    candidate that gets rejected for a THIRD, distinct reason -- not cost,
+    not direction, not earnings."""
+    portfolio = PortfolioState(
+        as_of="2020-01-01", cash=0.0,
+        positions={"AAA": Position(shares=10, avg_price=100.0, entry_date="2019-12-01",
+                                    scheduled_exit_date=str(PERIODS[5].date()))},
+    )
+    rows = {("AAA", PERIODS[0]): (EDGE, 1)}  # otherwise perfectly eligible, but already held
+    selector = TradeSelector(_config(top_n_per_period=5), portfolio=portfolio)
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.rejected_blocked == 1
+    assert selector.eligibility_stats.rejected_cost == 0
+
+
+def test_eligibility_stats_is_a_funnel_not_independently_double_counted():
+    """Deliberate failing-case check on the actual design claim
+    (EligibilityStats' own docstring: 'a funnel, not independent totals'):
+    a candidate rejected for direction (negative, long-only) is removed
+    BEFORE the cost check ever runs on it -- it must be counted once, at
+    rejected_direction, and must NOT also increment rejected_cost just
+    because it's also small in magnitude. A naive independent-boolean
+    implementation (checking cost unconditionally on the ORIGINAL frame
+    rather than the already-narrowed one) would double-count this."""
+    rows = {("SMALL_AND_SHORT", PERIODS[0]): (-FLOOR / 2, 1)}  # negative AND below the cost floor
+    selector = TradeSelector(_config(top_n_per_period=5))
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.rejected_direction == 1
+    assert selector.eligibility_stats.rejected_cost == 0  # never reached the cost check at all
+
+
+def test_eligibility_stats_considered_counts_every_candidate_seen():
+    rows = {("AAA", PERIODS[0]): (EDGE, 1), ("BBB", PERIODS[0]): (-EDGE, 2)}
+    selector = TradeSelector(_config(top_n_per_period=5))
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.considered == 2
+
+
+def test_eligibility_stats_accumulates_across_periods_not_just_the_last_one():
+    rows = {("A0", PERIODS[0]): (FLOOR / 2, 1), ("A1", PERIODS[1]): (FLOOR / 2, 1)}
+    selector = TradeSelector(_config(hold_days=1, top_n_per_period=5))
+    selector.run(_ranked(rows))
+    assert selector.eligibility_stats.rejected_cost == 2
+    assert selector.eligibility_stats.considered == 2
+
+
+def test_eligibility_stats_starts_at_zero():
+    assert TradeSelector(_config()).eligibility_stats == EligibilityStats()
+
+
+# --- period_pacing: the allowance snapshot at the moment it was used --------
+
+def test_period_pacing_records_the_allowance_actually_used():
+    """5 abundant candidates in one period, but a short window derives a
+    pacing rate of exactly 1 -- confirm period_pacing[1] records that 1,
+    and that it's genuinely what bound the actual entry count (not
+    eligibility -- all 5 candidates clear cost/direction easily)."""
+    hold_days, budget, window = 2, 20, 10
+    rows = {(f"T{i}", PERIODS[0]): (EDGE, i) for i in range(5)}
+    selector = TradeSelector(_config(hold_days=hold_days, trade_budget=budget, window_trading_days=window))
+    trades = selector.run(_ranked(rows))
+    assert selector.period_pacing[1] == 1
+    assert len(_entries(trades)) == 1
+    assert selector.eligibility_stats.considered == 5  # all 5 were real candidates, pacing (not eligibility) bound it
+
+
+def test_period_pacing_is_a_pre_consumption_snapshot_not_recomputable_after():
+    """Deliberate failing-case check on the actual reason this exists:
+    calling entries_allowed(period_number) AFTER run() has already
+    consumed this period's budget gives a DIFFERENT (smaller) number than
+    what genuinely governed the decision -- period_pacing must preserve
+    the real, pre-consumption value, not something recoverable by asking
+    again afterward."""
+    hold_days, budget, window = 2, 20, 4  # pacing allows 5 this period; taking them shrinks capacity visibly
+    rows = {(f"T{i}", PERIODS[0]): (EDGE, i) for i in range(5)}
+    selector = TradeSelector(_config(hold_days=hold_days, trade_budget=budget, window_trading_days=window))
+    selector.run(_ranked(rows))
+
+    recorded = selector.period_pacing[1]
+    recomputed_after = selector.entries_allowed(1)
+    assert recorded == 5
+    assert recomputed_after != recorded
+    assert recomputed_after < recorded  # budget/open-position state has moved on since
