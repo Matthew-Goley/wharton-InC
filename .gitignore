@@ -4,6 +4,10 @@ __pycache__/
 .pytest_cache/
 .env
 
+# harness/session-local infrastructure (e.g. ScheduleWakeup's lock file) --
+# not project content
+.claude/
+
 # training run logs and model artifacts -- regenerated every run, not source
 data/processed/*.jsonl
 data/processed/*_stdout.log

@@ -485,3 +485,46 @@ This is the ambiguity that current reasoning hasn't resolved — flagging explic
     | `scripts/dry_run_multi_day.py` (pre-fix) | Yes | Contaminated — already flagged correctly in item 42 (covers items 40 and 41's original run) |
 
     **What needs re-labeling, stated plainly**: item 39's MSFT recommendation, item 40's cost-floor/30-ticker eligibility counts, and item 41's original (also separately mis-anchored) 5-day ramp all ran with `agreement_bonus=0.1`, not the intended `0` — their qualitative conclusions (the cost floor has real teeth, sizing was batch-relative and unsafe, pacing derives correctly once anchored right) are not overturned by this, but their exact numbers should be read as produced under the wrong bonus, not re-verified against it. **Item 42's corrected 5-day dry run (the `--window-start`-anchored one, 20/40/50/60/80%) was run after both fixes landed and is clean** — confirmed by checking it was executed after the `agreement_bonus` source fix was committed, not before. Today's Task 1 verification (the row-by-row `0.1` check, above) is likewise clean.
+
+44. **Data-scaling and capacity curves for the broad expert — diagnostic only, `scripts/data_capacity_curves.py`, both curves flat, nothing promoted.**
+
+    **Explicit prohibitions honored throughout, not just stated**: no GA search (every arm uses `BEST_GENOME` unmodified except the one axis under test); no winner selected or promoted from either curve, including the one arm that crosses a naive 2-SE bar (see below — read, not acted on); broad expert only, no sector experts; `FEATURE_COLUMNS` untouched. Seed fixed and reported: `config.ga.random_seed = 42`.
+
+    **Task 1 — shared evaluation block, built once, reused by every arm.** Held out the most recent 12 months of the real panel: **2024-12-24 .. 2025-12-23** (250 trading dates, 510 tickers, mean 494.1 names/date, 50 non-overlapping `hold_days`-wide blocks). Embargo (`hold_days`+1 = 6 real trading dates, using the panel's own dates, not an approximated calendar) sets `train_end = 2024-12-16` — verified directly, not just computed: no training row's forward-label date falls on or after `eval_start`. **Empirical noise floor, not assumed from the ~0.0020 figure quoted from the full 497-date panel**: a single arm's own per-date IC series on this 250-date block has `std=0.1219`, giving **single-arm SE = 0.0077** — a real, materially different number from the 0.0020 previously cited, because that figure was itself a *paired* SE from a different, larger (497-date) block; the two were never the same quantity. The *paired* SEs actually used for every comparison below are generally smaller than 0.0077 (pairing removes shared day-to-day market noise, this project's own repeated finding) and vary per arm-pair — read off each row's own `t` rather than assuming one shared number.
+
+    **Task 2 — data scaling curve.** `1, 2, 3, 4, 6, 8` years, anchored at `train_end` and extending backward, `BEST_GENOME` and `hold_days=5` fixed throughout. The 6- and 8-year arms are truncated by the panel's own 2018-01-02 start (confirmed, not assumed — reported per-arm).
+
+    | Arm | Train rows | Span | IC | paired *t* vs 8yr |
+    |---|---|---|---|---|
+    | 1yr | 122,780 | 2023-12-18..2024-12-16 (truncated) | +0.0180 | −0.73 |
+    | 2yr | 243,984 | 2022-12-19..2024-12-16 (truncated) | +0.0208 | −0.63 |
+    | 3yr | 364,221 | 2021-12-17..2024-12-16 (truncated) | +0.0266 | +0.26 |
+    | 4yr | 482,874 | 2020-12-17..2024-12-16 (truncated) | +0.0177 | −1.06 |
+    | 6yr | 714,416 | 2018-12-17..2024-12-16 (truncated) | +0.0259 | +0.23 |
+    | 8yr (anchor) | 821,265 | 2018-01-02..2024-12-16 (truncated) | +0.0251 | — (self) |
+
+    **Shape: (b) plateaued — flat from the smallest arm tested.** No arm differs from the 8-year anchor by more than 1.06 SE; the point estimates don't even move monotonically with more data (3yr's raw IC, +0.0266, is the highest of all six arms, ahead of both 6yr and 8yr) — not (a) climbing, and not a clean single-knee plateau-after-some-point either, since there's no ascent to plateau from. More training history conveys no statistically detectable IC benefit anywhere in this 1–8 year range.
+
+    **Task 3 — capacity curve, two one-dimensional sweeps through `BEST_GENOME` (not a grid), data fixed at the full 8-year (truncated) window.** `BEST_GENOME`'s own values on the swept axes: `n_estimators=98`, `max_depth=8`.
+
+    | `n_estimators` | IC | paired *t* vs anchor (98) |
+    |---|---|---|
+    | 50 | +0.0246 | −0.31 |
+    | 100 | +0.0258 | **+2.55** |
+    | 200 | +0.0258 | +0.37 |
+    | 400 | +0.0212 | −1.32 |
+    | 800 | +0.0203 | −1.26 |
+    | 1600 | +0.0118 | −2.81 |
+
+    | `max_depth` | IC | paired *t* vs anchor (8) |
+    |---|---|---|
+    | 2 | +0.0038 | −2.78 |
+    | 4 | +0.0221 | −0.62 |
+    | 6 | +0.0250 | −0.04 |
+    | 8 (anchor) | +0.0251 | — (self) |
+
+    **`n_estimators=100` shows `t=+2.55`, individually clearing this project's usual 2-SE bar — reported, and explicitly not acted on.** This run made 16 total arm-vs-anchor comparisons (6 data + 10 capacity). Bonferroni-corrected for that family at α=0.05, the two-sided threshold is **t ≈ 2.96** — nothing in this entire run reaches it (the largest magnitude anywhere is 2.81, and it points the *wrong* way, at `n_estimators=1600`). `n_estimators=100`'s reading is exactly the winner's-curse case pre-registered before this run started: the best of many noisy comparisons looking real by chance. **Not promoted, not adopted, not treated as a finding** — named here only so the number isn't silently dropped from the record.
+
+    **Shape — `n_estimators`: (c) inverted-U.** Roughly flat/peaking through 50–200 (peak at 100–200, tied), then a real, directionally-consistent decline from 400 onward, reaching significance (wrong direction) at 1600. **Shape — `max_depth`: (b) plateaued from 4 onward.** A large, real jump from depth 2 (significantly worse, `t=−2.78` — genuinely under-capacity) to depth 4, then flat through 6 and 8 (`t≈0` between 6 and the anchor at 8) — no further climbing detected past depth 4–6.
+
+    **Which resource is binding: features, not data or capacity.** The data curve is flat across the entire tested range; the capacity curves are flat-to-declining past a modest point (~100–200 trees, ~depth 4–6) with real degradation at the extremes, not open-ended improvement. Neither curve shows the model hungry for more of either resource. This matches — and was pre-registered as the expected outcome of — the "For you" commentary accompanying this task: a valuable negative that closes "just train harder" as an avenue and points at non-price data as the remaining axis, not a failed experiment.
