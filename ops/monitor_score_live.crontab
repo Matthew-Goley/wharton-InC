@@ -1,0 +1,39 @@
+# B4 -- daily score_live.py monitoring (baseline_system_architecture.md
+# item 46). This is a PROPOSED line, NOT installed on this machine as of
+# this commit -- review the timing note below, then install with the
+# command at the bottom once approved. Referenced from CLAUDE.md so
+# anyone reading the project docs finds this file, not just this comment.
+#
+# TIMING: 06:30 local time, weekdays only (NYSE-holiday/weekend detection
+# happens inside monitor_score_live.py itself, not here -- this line just
+# needs to fire on every calendar weekday). This machine's local zone is
+# America/Chicago (confirmed via `timedatectl`: UTC-5 CDT / UTC-6 CST).
+# NYSE closes 4:00pm ET, which is always 3:00pm local here -- Eastern and
+# Central both observe DST, so the 1-hour offset never changes. 6:30am the
+# next morning is a ~15.5 hour buffer after the prior trading day's close:
+# src/data_pipeline/fetch_live.py and fetch_training.py both request
+# `auto_adjust=False` (the raw price that actually printed, not a
+# dividend/split-adjusted figure computed later), and Yahoo Finance
+# typically has that raw daily bar available within minutes to a couple
+# hours of the close -- 15.5 hours is a comfortable margin, not a tight
+# one. cron runs on the system's local time by default (no CRON_TZ set
+# here), so "6:30am" tracks local wall-clock automatically across DST
+# transitions with no separate adjustment needed.
+#
+# Before STOCK_LIST/WINDOW_START_DATE are populated (baseline_system_
+# architecture.md §5, "Blocked on External Input"), this line runs
+# score_live.py, which cleanly fails its own _preflight check and logs
+# that -- expected, not an error in this line. It becomes a real live run
+# automatically, with no change needed here, the day both are set.
+#
+# INSTALL (appends one line to this user's existing crontab -- does NOT
+# replace it):
+#   (crontab -l 2>/dev/null; echo; grep '^30 6' "ops/monitor_score_live.crontab") | crontab -
+#
+# VERIFY the installed line still matches this file (run any time):
+#   diff <(crontab -l | grep monitor_score_live) <(grep monitor_score_live "ops/monitor_score_live.crontab")
+#   -- or just: bash scripts/verify_crontab.sh
+#
+# REMOVE:
+#   crontab -e   # delete the one matching line by hand, save, exit
+30 6 * * 1-5 cd "/home/blueman1818/Projects/gen alg + XGB" && "/home/blueman1818/.venv/bin/python3" -m scripts.monitor_score_live >> "/home/blueman1818/Projects/gen alg + XGB/data/processed/live_monitor_logs/cron_stdout.log" 2>&1

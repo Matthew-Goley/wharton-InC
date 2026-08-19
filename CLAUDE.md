@@ -104,6 +104,10 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## Daily live monitoring (B4)
+
+`scripts/monitor_score_live.py` runs `score_live.py` once a day, logs the full output, diffs it against the prior day, and flags any expected trading day with no log at all. The proposed daily cron line lives at `ops/monitor_score_live.crontab` (not installed until the team approves the timing — see that file's own comments for the reasoning and the install/verify commands; `scripts/verify_crontab.sh` confirms the installed line still matches the repo copy). See `baseline_system_architecture.md` item 46.
+
 ## Conventions
 
 - Ticker lists live only in `config/` — never hardcode a symbol elsewhere
