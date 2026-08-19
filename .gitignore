@@ -25,3 +25,8 @@ data/raw/live/
 # run. The manually-maintained portfolio_state.json (updated once a
 # recommendation is actually acted on) is the durable record, not this.
 data/processed/live_recommendations/
+
+# scripts/monitor_score_live.py's (B4) daily log-and-diff transcripts --
+# regenerated every day, same "not the source of truth" reasoning as
+# live_recommendations/ above.
+data/processed/live_monitor_logs/

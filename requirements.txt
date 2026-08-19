@@ -4,6 +4,7 @@ scipy>=1.11
 scikit-learn>=1.3
 xgboost>=2.0
 joblib>=1.3
+statsmodels>=0.14  # Newey-West HAC SE for autocorrelation-corrected paired IC comparisons
 
 # data pipeline (merged from wharton-InC, src/data_pipeline/)
 yfinance
