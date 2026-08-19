@@ -25,15 +25,32 @@ HOLD_DAYS_SWEEP: tuple[int, ...] = (1, 3, 5, 10)
 #: Competition window: 10 weeks * 5 trading days/week (spec §5).
 WINDOW_TRADING_DAYS: int = 50
 
+#: True once the team has confirmed WINDOW_START_DATE against the real
+#: competition schedule. `False` means the date below is a PLACEHOLDER —
+#: every consumer of WINDOW_START_DATE must check THIS flag, not merely
+#: whether the date is set, before treating a computed period_number as
+#: real. Exists because a previous placeholder value silently put the
+#: system at period 18 of 50 with an empty portfolio and a doubled
+#: derived entry rate (baseline_system_architecture.md item 42) — a
+#: plausible-looking wrong number that was nearly read as real. Flip to
+#: `True` in the SAME commit that sets the real, confirmed date; never
+#: set independently of it.
+WINDOW_START_DATE_CONFIRMED: bool = False
+
 #: Calendar date the competition's live trading window begins (period 1,
-#: exit_rule_spec.md's period convention). `None` until the team confirms
-#: it from the real competition schedule — same not-yet-confirmed pattern
-#: as `config/cost_model.py`'s `POSITION_CAP_PCT`. Needed by
+#: exit_rule_spec.md's period convention). A PLACEHOLDER pending team
+#: confirmation from the real competition schedule (see
+#: WINDOW_START_DATE_CONFIRMED above) — chosen as 2026-08-19, the date
+#: daily B4 monitoring began (baseline_system_architecture.md item 46),
+#: purely so `period_number_for` and live pacing have something to
+#: compute against instead of raising every single day. NOT a guess at
+#: the real date — same not-yet-confirmed pattern as
+#: `config/cost_model.py`'s `POSITION_CAP_PCT`. Needed by
 #: `period_number_for` below, and by `TradeSelector.run`'s live-mode path
 #: (baseline_system_architecture.md open question 27) to know which
 #: window-day "today" is without depending on whatever happens to be in a
 #: given day's scored DataFrame.
-WINDOW_START_DATE: Optional[str] = None
+WINDOW_START_DATE: Optional[str] = "2026-08-19"
 
 
 def period_number_for(
@@ -56,6 +73,13 @@ def period_number_for(
     enough to unblock live pacing (self-correcting every run, per
     TradeSelector._entries_allowed), not good enough to trust for an
     exact-equality check against it.
+
+    This function does NOT check `WINDOW_START_DATE_CONFIRMED` -- it's a
+    pure function of whatever start date it's handed (explicit arg, or
+    the module default), including a placeholder one. Callers that read
+    the module default (score_live.py) are responsible for checking
+    `WINDOW_START_DATE_CONFIRMED` themselves and surfacing an unmistakable
+    warning when it's `False` -- see score_live.py's own preflight/banner.
     """
     start = window_start_date or WINDOW_START_DATE
     if start is None:

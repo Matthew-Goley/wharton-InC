@@ -106,7 +106,13 @@ pip install -r requirements.txt
 
 ## Daily live monitoring (B4)
 
-`scripts/monitor_score_live.py` runs `score_live.py` once a day, logs the full output, diffs it against the prior day, and flags any expected trading day with no log at all. The proposed daily cron line lives at `ops/monitor_score_live.crontab` (not installed until the team approves the timing — see that file's own comments for the reasoning and the install/verify commands; `scripts/verify_crontab.sh` confirms the installed line still matches the repo copy). See `baseline_system_architecture.md` item 46.
+`scripts/monitor_score_live.py` runs `score_live.py` once a day, logs the full output, diffs it against the prior day, and flags any expected trading day with no log at all. Installed as a cron job (`ops/monitor_score_live.crontab`, 06:30 America/Chicago weekdays — see that file's own comments for the reasoning; `scripts/verify_crontab.sh` confirms the installed line still matches the repo copy). See `baseline_system_architecture.md` items 46/49/50.
+
+**`WINDOW_START_DATE` is currently a placeholder** (`config/hold_period.py::WINDOW_START_DATE_CONFIRMED = False`) — real-STOCK_LIST runs are hard-blocked by `score_live.py`'s own preflight until the team confirms the real competition start date and flips that flag; `--tickers`-override runs (smoke tests, B4's placeholder-universe monitoring) proceed with a loud, unmissable placeholder banner instead. Never set `WINDOW_START_DATE` without also flipping `WINDOW_START_DATE_CONFIRMED` in the same change.
+
+## Statistical significance gate
+
+Any SE computed on a per-date IC series must use block-bootstrap correction (`src.evaluation.block_se.block_bootstrap_se`, over non-overlapping `hold_days`-wide blocks) — naive `std(series)/√n_dates` understates it by a consistent ~1.6× on this project's real data (verified two independent ways, `baseline_system_architecture.md` items 45/47) and is not acceptable anywhere in this project going forward. The feature-work promotion gate (`scripts/feature_candidate_common.py`) reports both automatically; representative corrected 2-SE gate ≈**0.0092 IC** (see item 47 for the full table and the underlying single-arm/paired figures).
 
 ## Conventions
 

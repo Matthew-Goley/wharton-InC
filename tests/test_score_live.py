@@ -22,6 +22,7 @@ from src.config import BaselineConfig
 
 def test_preflight_passes_when_everything_is_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(hold_period, "WINDOW_START_DATE", "2026-08-17")
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE_CONFIRMED", True)
     fake_model_path = tmp_path / "models.joblib"
     fake_model_path.write_text("placeholder")
     monkeypatch.setattr(score_live, "MODEL_PATH", fake_model_path)
@@ -46,10 +47,45 @@ def test_preflight_names_a_missing_window_start_date(monkeypatch):
 
 def test_preflight_names_a_missing_model_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(hold_period, "WINDOW_START_DATE", "2026-08-17")
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE_CONFIRMED", True)
     monkeypatch.setattr(score_live, "MODEL_PATH", tmp_path / "does_not_exist.joblib")
     error = _preflight(["AAPL"])
     assert error is not None
     assert "does not exist" in error
+
+
+# --- _preflight: WINDOW_START_DATE_CONFIRMED gate ---------------------------------
+
+def test_preflight_hard_blocks_an_unconfirmed_placeholder_on_a_real_stock_list_run(tmp_path, monkeypatch):
+    """The actual point of the gate: real tickers (using_real_stock_list=
+    True, the default) + an unconfirmed placeholder date must hard-block
+    -- exactly the combination that produced the period-18/doubled-pacing
+    disaster (item 42) when it was allowed through silently."""
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE", "2026-08-19")
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE_CONFIRMED", False)
+    monkeypatch.setattr(score_live, "MODEL_PATH", Path(__file__))
+    error = _preflight(["AAPL"], using_real_stock_list=True)
+    assert error is not None
+    assert "PLACEHOLDER" in error
+    assert "WINDOW_START_DATE_CONFIRMED" in error
+
+
+def test_preflight_allows_an_unconfirmed_placeholder_through_a_tickers_override(tmp_path, monkeypatch):
+    """A --tickers override (a smoke test, or B4's deliberate placeholder-
+    universe daily monitoring run) is NOT a real run and must be allowed
+    through even with an unconfirmed placeholder -- main() prints its own
+    loud banner for this case instead of blocking."""
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE", "2026-08-19")
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE_CONFIRMED", False)
+    monkeypatch.setattr(score_live, "MODEL_PATH", Path(__file__))
+    assert _preflight(["AAPL"], using_real_stock_list=False) is None
+
+
+def test_preflight_passes_a_real_run_once_the_placeholder_is_confirmed(tmp_path, monkeypatch):
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE", "2026-09-08")
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE_CONFIRMED", True)
+    monkeypatch.setattr(score_live, "MODEL_PATH", Path(__file__))
+    assert _preflight(["AAPL"], using_real_stock_list=True) is None
 
 
 def test_preflight_reports_every_problem_at_once_not_just_the_first():

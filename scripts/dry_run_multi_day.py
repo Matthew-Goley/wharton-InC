@@ -80,6 +80,21 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.window_start is not None:
         hold_period.WINDOW_START_DATE = args.window_start
+    elif not hold_period.WINDOW_START_DATE_CONFIRMED:
+        # The module default is now a non-None PLACEHOLDER (baseline_
+        # system_architecture.md item 47/48), not "unset" -- relying on
+        # it silently here would break this docstring's own promise
+        # ("leave unset to use the real, currently-confirmed season
+        # start") exactly the way an uncalibrated anchor already caused a
+        # real mis-anchoring bug once (item 42). Pass --window-start
+        # explicitly for a simulation run instead.
+        print(
+            f"config/hold_period.py's WINDOW_START_DATE ({hold_period.WINDOW_START_DATE}) is still a "
+            "PLACEHOLDER (WINDOW_START_DATE_CONFIRMED=False) and --window-start wasn't passed -- pass "
+            "--window-start explicitly for a simulation run, or confirm the real date first.",
+            file=sys.stderr,
+        )
+        return 1
     if hold_period.WINDOW_START_DATE is None:
         print("config/hold_period.py's WINDOW_START_DATE is not set (and --window-start wasn't "
               "passed either).", file=sys.stderr)

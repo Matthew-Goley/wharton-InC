@@ -66,6 +66,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = REPO_ROOT / "data" / "processed" / "live_monitor_logs"
 CONFIG_DIR = REPO_ROOT / "config"
 
+from config import hold_period  # noqa: E402
 from src.selection.portfolio_state import DEFAULT_PATH as PORTFOLIO_STATE_PATH  # noqa: E402
 
 # Manually maintained, project-owned NYSE holiday calendar -- NOT derived
@@ -213,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
         raise LiveStateMutationError(f"protected paths changed: {changed}")
 
     log_path.write_text(
-        f"[{now.isoformat()}] HEARTBEAT exit_code={exit_code}\n"
+        f"[{now.isoformat()}] HEARTBEAT exit_code={exit_code} "
+        f"window_start_date={hold_period.WINDOW_START_DATE} "
+        f"window_start_date_confirmed={hold_period.WINDOW_START_DATE_CONFIRMED}\n"
         f"{_SEPARATOR}\nexit_code={exit_code}\n{output}\n"
     )
     print(f"  exit_code={exit_code}  logged to {log_path}")

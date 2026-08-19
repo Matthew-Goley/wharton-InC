@@ -40,6 +40,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -73,11 +74,22 @@ OUTPUT_DIR = REPO_ROOT / "data" / "processed" / "live_recommendations"
 FEATURE_LOOKBACK_CALENDAR_DAYS = 450
 
 
-def _preflight(tickers: list[str]) -> Optional[str]:
+def _preflight(tickers: list[str], using_real_stock_list: bool = True) -> Optional[str]:
     """Every known precondition, checked up front. Returns a message
     naming exactly what's missing, or None if ready to run -- the
     explicit alternative to letting any one of these surface as a stack
-    trace partway through the pipeline."""
+    trace partway through the pipeline.
+
+    ``using_real_stock_list`` distinguishes a real run (no --tickers
+    override, scoring config/stock_list.py's actual approved list) from
+    a --tickers override (a smoke test or the deliberate placeholder-
+    universe daily monitoring run, baseline_system_architecture.md item
+    46) -- an unconfirmed WINDOW_START_DATE hard-blocks the former (real
+    tickers + a fake calendar anchor is exactly the disaster item 42
+    found) but not the latter, which is allowed through with a loud,
+    unmissable banner instead (see main()) so it can keep exercising the
+    pipeline while genuinely blocked-on-input items get resolved.
+    """
     problems = []
     if not tickers:
         problems.append(
@@ -89,6 +101,13 @@ def _preflight(tickers: list[str]) -> Optional[str]:
         problems.append(
             "config/hold_period.py's WINDOW_START_DATE is not set -- confirm the competition's "
             "real start date and set it there before a live period number can be computed."
+        )
+    elif using_real_stock_list and not hold_period.WINDOW_START_DATE_CONFIRMED:
+        problems.append(
+            f"config/hold_period.py's WINDOW_START_DATE ({hold_period.WINDOW_START_DATE}) is still a "
+            "PLACEHOLDER (WINDOW_START_DATE_CONFIRMED=False) -- STOCK_LIST is populated, so this would "
+            "be a real run against a fake calendar anchor. Confirm the real competition start date, set "
+            "it, and flip WINDOW_START_DATE_CONFIRMED to True in the same change before running for real."
         )
     if not MODEL_PATH.exists():
         problems.append(
@@ -177,9 +196,17 @@ def _print_eligibility_summary(selector: TradeSelector, period_number: int) -> N
 def _emit(report: pd.DataFrame, today: pd.Timestamp) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"{today.date()}.json"
-    report.reset_index().to_json(path, orient="records", indent=2, date_format="iso")
+    payload = {
+        "window_start_date": hold_period.WINDOW_START_DATE,
+        "window_start_date_confirmed": hold_period.WINDOW_START_DATE_CONFIRMED,
+        "recommendations": json.loads(report.reset_index().to_json(orient="records", date_format="iso")),
+    }
+    path.write_text(json.dumps(payload, indent=2))
 
     print(f"\n{'=' * 72}\nLIVE RECOMMENDATIONS for {today.date()} -- {len(report)} action(s)\n{'=' * 72}")
+    if not hold_period.WINDOW_START_DATE_CONFIRMED:
+        print(f"  NOTE: window_start_date_confirmed=False in this file -- {hold_period.WINDOW_START_DATE} "
+              f"is a placeholder anchor, not the confirmed competition start date.")
     if report.empty:
         print("  (none -- nothing eligible this period, or nothing due to exit)")
     for (ticker, _ts), row in report.iterrows():
@@ -195,11 +222,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--tickers", nargs="+", default=None, help="override config/stock_list.py, for a smoke test")
     args = parser.parse_args(argv)
 
+    using_real_stock_list = args.tickers is None
     tickers = args.tickers or STOCK_LIST
-    error = _preflight(tickers)
+    error = _preflight(tickers, using_real_stock_list=using_real_stock_list)
     if error:
         print(error, file=sys.stderr)
         return 1
+
+    if not hold_period.WINDOW_START_DATE_CONFIRMED:
+        print("!" * 72)
+        print(f"! WINDOW_START_DATE = {hold_period.WINDOW_START_DATE} IS A PLACEHOLDER, NOT CONFIRMED.")
+        print("! Every period_number / pacing figure below is computed against a FAKE")
+        print("! calendar anchor. Do not act on this output as if it were real.")
+        print("!" * 72)
 
     config = BaselineConfig()
 
@@ -259,7 +294,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     today = ranked.index.get_level_values("timestamp").max()
     period_number = period_number_for(today)
     today_ranked = ranked.xs(today, level="timestamp", drop_level=False)
-    print(f"Scoring against {today.date()} (window period {period_number})...")
+    placeholder_note = " [PLACEHOLDER anchor, not confirmed]" if not hold_period.WINDOW_START_DATE_CONFIRMED else ""
+    print(f"Scoring against {today.date()} (window period {period_number}{placeholder_note})...")
 
     portfolio = load_portfolio_state()
     selector = TradeSelector(
