@@ -192,6 +192,24 @@ def test_position_size_is_fixed_at_the_configured_cap_not_batch_relative():
     assert (_entries(trades)["position_size_pct"] == cost_model.POSITION_CAP_PCT).all()
 
 
+def test_size_positions_computes_an_explicit_min_not_just_cap():
+    """Deliberate failing-case check: _size_positions must genuinely
+    compute min(1/len(selected), cap), not just return cap unconditionally
+    and rely on entries_allowed's by_capital term to have kept the batch
+    small enough elsewhere. Calls it DIRECTLY with a batch larger than
+    1/cap could ever admit through the real pipeline -- bypassing
+    entries_allowed entirely -- to prove the safety property is local to
+    this method, not borrowed from a guarantee made two methods away."""
+    selector = TradeSelector(_config(position_cap_pct=0.10))
+    index = pd.MultiIndex.from_tuples(
+        [(f"T{i}", PERIODS[0]) for i in range(20)], names=["ticker", "timestamp"]  # 20 > 1/0.10 = 10
+    )
+    selected = pd.DataFrame({"combined_score": [EDGE] * 20}, index=index)
+    sizes = selector._size_positions(selected)
+    assert (sizes == 1.0 / 20).all()  # min(1/20, 0.10) = 0.05, not 0.10 -- would have summed to 200% at cap alone
+    assert sizes.sum() == pytest.approx(1.0)  # the whole point: this batch alone never exceeds 100%
+
+
 def test_position_size_respects_an_explicit_cap():
     selector = TradeSelector(_config(top_n_per_period=5, hold_days=5, position_cap_pct=0.1))
     rows = {("AAA", PERIODS[0]): (EDGE, 1), ("BBB", PERIODS[0]): (EDGE, 2)}

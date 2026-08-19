@@ -261,6 +261,22 @@ class TradeSelector:
         that genuinely wants to test something cap-independent should say
         so explicitly, not fall through to a formula that happens to be
         unsafe.
+
+        Sizes at ``min(1/len(selected), cap)`` — EXPLICITLY, not just
+        ``cap`` alone. In this system the two are mathematically
+        identical today: ``entries_allowed``'s own ``by_capital`` term
+        already guarantees ``len(selected) <= floor(1/cap)`` before this
+        method ever runs, so ``1/len(selected) >= cap`` always holds and
+        the ``min`` never picks the first branch. But that guarantee
+        lives in a DIFFERENT method, computed from different state
+        (``open_positions_count`` at the time ``entries_allowed`` was
+        called) than what THIS method sees (``len(selected)``, the actual
+        realized batch) — nothing forces them to stay in sync if either
+        is changed independently later (a new caller of
+        ``_size_positions`` that bypasses ``entries_allowed``, a future
+        edit to the pacing formula). Computing the ``min`` here makes the
+        safety property local and self-contained rather than resting on
+        an invariant enforced two methods away.
         """
         if selected.empty:
             return pd.Series(dtype=float, index=selected.index)
@@ -274,7 +290,8 @@ class TradeSelector:
                 "repeated entries. Set a real position_cap_pct (config/cost_model.py's "
                 "POSITION_CAP_PCT) before sizing any entries."
             )
-        return pd.Series(cap, index=selected.index)
+        size = min(1.0 / len(selected), cap)
+        return pd.Series(size, index=selected.index)
 
     # -- per-period mechanics ---------------------------------------------
 
