@@ -35,22 +35,16 @@ WINDOW_TRADING_DAYS: int = 50
 #: plausible-looking wrong number that was nearly read as real. Flip to
 #: `True` in the SAME commit that sets the real, confirmed date; never
 #: set independently of it.
-WINDOW_START_DATE_CONFIRMED: bool = False
+WINDOW_START_DATE_CONFIRMED: bool = True
 
 #: Calendar date the competition's live trading window begins (period 1,
-#: exit_rule_spec.md's period convention). A PLACEHOLDER pending team
-#: confirmation from the real competition schedule (see
-#: WINDOW_START_DATE_CONFIRMED above) — chosen as 2026-08-19, the date
-#: daily B4 monitoring began (baseline_system_architecture.md item 46),
-#: purely so `period_number_for` and live pacing have something to
-#: compute against instead of raising every single day. NOT a guess at
-#: the real date — same not-yet-confirmed pattern as
-#: `config/cost_model.py`'s `POSITION_CAP_PCT`. Needed by
-#: `period_number_for` below, and by `TradeSelector.run`'s live-mode path
-#: (baseline_system_architecture.md open question 27) to know which
-#: window-day "today" is without depending on whatever happens to be in a
-#: given day's scored DataFrame.
-WINDOW_START_DATE: Optional[str] = "2026-08-19"
+#: exit_rule_spec.md's period convention). CONFIRMED by the team
+#: 2026-10-11: the season started Monday 2026-09-28 (replacing the earlier
+#: 2026-08-19 placeholder). Needed by `period_number_for` below, and by
+#: `TradeSelector.run`'s live-mode path (baseline_system_architecture.md
+#: open question 27) to know which window-day "today" is without depending
+#: on whatever happens to be in a given day's scored DataFrame.
+WINDOW_START_DATE: Optional[str] = "2026-09-28"
 
 
 def period_number_for(

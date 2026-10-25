@@ -51,7 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from config import hold_period  # noqa: E402
+from config import cost_model, hold_period  # noqa: E402
 from config.hold_period import period_number_for  # noqa: E402
 from config.stock_list import STOCK_LIST  # noqa: E402
 from scripts.train_all_sector_experts_real import MODEL_PATH  # noqa: E402
@@ -108,6 +108,13 @@ def _preflight(tickers: list[str], using_real_stock_list: bool = True) -> Option
             "PLACEHOLDER (WINDOW_START_DATE_CONFIRMED=False) -- STOCK_LIST is populated, so this would "
             "be a real run against a fake calendar anchor. Confirm the real competition start date, set "
             "it, and flip WINDOW_START_DATE_CONFIRMED to True in the same change before running for real."
+        )
+    size = BaselineConfig().trading.position_cap_pct
+    if size is not None and size > cost_model.POSITION_CAP_PCT:
+        problems.append(
+            f"per-entry size {size:.0%} (TradingConfig.position_cap_pct, default "
+            f"config/cost_model.py's POSITION_SIZE_PCT) exceeds the competition's per-stock "
+            f"cap POSITION_CAP_PCT={cost_model.POSITION_CAP_PCT:.0%} -- every entry would break the rule."
         )
     if not MODEL_PATH.exists():
         problems.append(

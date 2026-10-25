@@ -36,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from config.stock_list import STOCK_LIST  # noqa: E402
 from config.training_universe import TRAINING_UNIVERSE  # noqa: E402
 
 CACHE_PATH = REPO_ROOT / "data" / "raw" / "reference" / "sector_info_raw.csv"
@@ -171,8 +172,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    raw, failures = fetch_all(TRAINING_UNIVERSE, args.force)
-    write_sector_map(TRAINING_UNIVERSE, raw)
+    # Live-only names (on STOCK_LIST but never in the training universe, e.g.
+    # recent index additions) need a sector too, or live scoring treats them
+    # as broad-only. Mapping them changes nothing in training, which only
+    # ever reads TRAINING_UNIVERSE tickers.
+    universe = sorted(set(TRAINING_UNIVERSE) | set(STOCK_LIST))
+    raw, failures = fetch_all(universe, args.force)
+    write_sector_map(universe, raw)
     if failures:
         print(f"\n{len(failures)} tickers had no sector data: {failures[:20]}{'...' if len(failures) > 20 else ''}")
     return 0

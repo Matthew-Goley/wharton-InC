@@ -180,7 +180,8 @@ def test_edge_below_cost_floor_is_excluded():
 def test_position_size_is_fixed_at_the_configured_cap_not_batch_relative():
     """The corrected default (baseline_system_architecture.md open
     question 41): TradingConfig.position_cap_pct now defaults to a real
-    value (config/cost_model.py's POSITION_CAP_PCT), and every entry is
+    value (config/cost_model.py's POSITION_SIZE_PCT, the per-entry size --
+    distinct from the competition's POSITION_CAP_PCT ceiling), and every entry is
     sized at exactly that fixed fraction -- NOT 1/len(selected), which
     would have given 0.5 here (2 entries, one period) under the old,
     removed fallback. This is a direct behavioral regression test for the
@@ -189,7 +190,8 @@ def test_position_size_is_fixed_at_the_configured_cap_not_batch_relative():
     rows = {("AAA", PERIODS[0]): (EDGE, 1), ("BBB", PERIODS[0]): (EDGE, 2)}
     trades = selector.run(_ranked(rows))
     from config import cost_model
-    assert (_entries(trades)["position_size_pct"] == cost_model.POSITION_CAP_PCT).all()
+    assert (_entries(trades)["position_size_pct"] == cost_model.POSITION_SIZE_PCT).all()
+    assert cost_model.POSITION_SIZE_PCT <= cost_model.POSITION_CAP_PCT
 
 
 def test_size_positions_computes_an_explicit_min_not_just_cap():

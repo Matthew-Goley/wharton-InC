@@ -166,7 +166,13 @@ class TradingConfig:
     # confirmed — so this dataclass never drifts out of sync with it.
     allow_short: bool = False  # long-only: no short selling, no margin
     min_edge_margin: float = cost_model.MIN_EDGE_MARGIN  # predicted edge must clear cost by this multiple
-    position_cap_pct: Optional[float] = cost_model.POSITION_CAP_PCT  # per-stock % of portfolio; TBD
+    #: Fixed per-entry size as a fraction of portfolio value (also sets max
+    #: concurrent positions = floor(1/size)). Despite the name, this is the
+    #: SIZE the selector trades at, defaulting to cost_model.POSITION_SIZE_PCT;
+    #: the competition's real per-stock ceiling is cost_model.POSITION_CAP_PCT,
+    #: and score_live.py's preflight refuses a live run sized above it (unit
+    #: tests deliberately use other sizes to exercise selector mechanics).
+    position_cap_pct: Optional[float] = cost_model.POSITION_SIZE_PCT
     max_trades_per_stock_per_day: int = 2  # real rule, expected non-binding (see doc)
 
     #: Max share of the window's total ENTRIES (not entries+exits) any one

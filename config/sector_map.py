@@ -12,7 +12,7 @@ constraint. Not a point-in-time mapping: a ticker's *current* sector is
 applied across its whole price history, same simplification the broad
 model already makes implicitly by not having a sector-history mapping.
 
-583 of 653 universe tickers resolved. Generated 2026-08-17.
+593 of 663 universe tickers resolved. Generated 2026-10-11.
 """
 
 SECTOR_MAP: dict[str, str] = {
@@ -107,6 +107,7 @@ SECTOR_MAP: dict[str, str] = {
     "CAG": "Consumer Staples",
     "CAH": "Health Care",
     "CARR": "Industrials",
+    "CASY": "Consumer Discretionary",
     "CAT": "Industrials",
     "CB": "Financials",
     "CBOE": "Financials",
@@ -190,6 +191,7 @@ SECTOR_MAP: dict[str, str] = {
     "DXCM": "Health Care",
     "EA": "Communication Services",
     "EBAY": "Consumer Discretionary",
+    "ECHO": "Communication Services",
     "ECL": "Materials",
     "ED": "Utilities",
     "EFX": "Industrials",
@@ -226,12 +228,15 @@ SECTOR_MAP: dict[str, str] = {
     "FCX": "Materials",
     "FDS": "Financials",
     "FDX": "Industrials",
+    "FDXF": "Industrials",
     "FE": "Utilities",
+    "FERG": "Industrials",
     "FFIV": "Information Technology",
     "FICO": "Information Technology",
     "FIS": "Information Technology",
     "FITB": "Financials",
     "FIX": "Industrials",
+    "FLEX": "Information Technology",
     "FLR": "Industrials",
     "FLS": "Industrials",
     "FMC": "Materials",
@@ -273,6 +278,7 @@ SECTOR_MAP: dict[str, str] = {
     "HLT": "Consumer Discretionary",
     "HOG": "Consumer Discretionary",
     "HON": "Industrials",
+    "HONA": "Industrials",
     "HOOD": "Financials",
     "HP": "Energy",
     "HPE": "Information Technology",
@@ -381,6 +387,7 @@ SECTOR_MAP: dict[str, str] = {
     "MRK": "Health Care",
     "MRNA": "Health Care",
     "MRSH": "Financials",
+    "MRVL": "Information Technology",
     "MS": "Financials",
     "MSCI": "Financials",
     "MSFT": "Information Technology",
@@ -462,6 +469,7 @@ SECTOR_MAP: dict[str, str] = {
     "QCOM": "Information Technology",
     "QRVO": "Information Technology",
     "RCL": "Consumer Discretionary",
+    "RDDT": "Communication Services",
     "REG": "Real Estate",
     "REGN": "Health Care",
     "RF": "Financials",
@@ -554,11 +562,13 @@ SECTOR_MAP: dict[str, str] = {
     "URI": "Industrials",
     "USB": "Financials",
     "V": "Financials",
+    "VEEV": "Health Care",
     "VFC": "Consumer Discretionary",
     "VICI": "Real Estate",
     "VLO": "Energy",
     "VLTO": "Industrials",
     "VMC": "Materials",
+    "VMRK": "Real Estate",
     "VNO": "Real Estate",
     "VNT": "Information Technology",
     "VRSK": "Industrials",

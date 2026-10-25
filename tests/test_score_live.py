@@ -54,6 +54,22 @@ def test_preflight_names_a_missing_model_bundle(tmp_path, monkeypatch):
     assert "does not exist" in error
 
 
+def test_preflight_blocks_a_position_size_above_the_competition_cap(tmp_path, monkeypatch):
+    """The per-entry size (POSITION_SIZE_PCT) and the competition's per-stock
+    ceiling (POSITION_CAP_PCT) are separate values; a live run sized above
+    the ceiling would break the rule on every entry, so it must not start."""
+    from config import cost_model
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE", "2026-08-17")
+    monkeypatch.setattr(hold_period, "WINDOW_START_DATE_CONFIRMED", True)
+    fake_model_path = tmp_path / "models.joblib"
+    fake_model_path.write_text("placeholder")
+    monkeypatch.setattr(score_live, "MODEL_PATH", fake_model_path)
+    monkeypatch.setattr(cost_model, "POSITION_CAP_PCT", BaselineConfig().trading.position_cap_pct / 2)
+    error = _preflight(["AAPL"])
+    assert error is not None
+    assert "exceeds the competition's per-stock cap" in error
+
+
 # --- _preflight: WINDOW_START_DATE_CONFIRMED gate ---------------------------------
 
 def test_preflight_hard_blocks_an_unconfirmed_placeholder_on_a_real_stock_list_run(tmp_path, monkeypatch):
